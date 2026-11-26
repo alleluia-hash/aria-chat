@@ -6,6 +6,11 @@
  *   2. Puter.js, an optional free account. When the visitor is signed in,
  *      replies stream instantly and the pacing doesn't apply.
  *
+ * Live lookups: before answering a factual or "right now" question, the app
+ * fetches public sources straight from the browser (Wikipedia in the visitor's
+ * language, Open-Meteo weather, exchange rates, CoinGecko prices) and hands the
+ * result to the model as evidence, with links shown under the reply.
+ *
  * Chats live only in this browser (localStorage). Messages are sent to
  * whichever model provider answers; there is no analytics or tracking here.
  */
@@ -28,6 +33,17 @@
     "Never invent facts, prices, sources or links. Today's date is " +
     new Date().toISOString().slice(0, 10) +
     ".";
+
+  // Appended to the outgoing request only, never shown to the person.
+  const LIVE_INSTRUCTIONS =
+    " A LIVE INFO block may be attached after the conversation. When it is: base every " +
+    "factual claim on it, quote its numbers as given, and link the sources you used. " +
+    "If the exact figure or detail the person asked for is not in it, say plainly that " +
+    "it is not publicly published — never invent, round or guess a number. Never say " +
+    "you cannot access the internet: this app looks things up for you. If the block " +
+    "holds a related figure (a worldwide total, another year's figure) but not the exact " +
+    "one asked for, state that figure first, clearly labelled for what it is, and only " +
+    "then say the requested one is not published — do not leave a usable number out.";
 
   const el = {
     chat: document.getElementById("chat"),
@@ -284,11 +300,398 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Live lookups — public sources a browser is allowed to read directly
+   * ------------------------------------------------------------------ */
+
+  const LIVE_TIMEOUT_MS = 9000;
+  const MAX_CONTEXT_CHARS = 5200;
+
+  function uiLang() {
+    const tag = String(navigator.language || "en").slice(0, 2).toLowerCase();
+    return /^[a-z]{2}$/.test(tag) ? tag : "en";
+  }
+
+  async function getJson(url, ms = LIVE_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+      const response = await fetch(url, { signal: controller.signal, mode: "cors" });
+      if (!response.ok) throw new Error(`lookup ${response.status}`);
+      return await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Question words and filler make Wikipedia rank the wrong article, so they go.
+  const QUERY_STOP = new Set(
+    ("how many much who what when where why which is are was were do does did can could " +
+      "the a an of in on at to for from and or with me my i you it this that there " +
+      "copies copy sold sales sell exact number total figure currently " +
+      "chi cosa come quando dove perché perche quale quali quanti quante quanto " +
+      "copie copia vendute venduto sono è e di del della dei delle un una il lo la gli le " +
+      "nel nella mi ti si che hai ha ho").split(" ")
+  );
+
+  function tokenize(text) {
+    return String(text)
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+  }
+
+  function searchTokens(text) {
+    return tokenize(text)
+      .filter((word) => word.length > 1 && !QUERY_STOP.has(word))
+      .slice(0, 10);
+  }
+
+  async function wikiTitles(lang, query, limit = 6) {
+    const data = await getJson(
+      `https://${lang}.wikipedia.org/w/api.php?action=query&list=search` +
+        `&srsearch=${encodeURIComponent(query)}&srlimit=${limit}&srnamespace=0&format=json&origin=*`
+    );
+    return ((data && data.query && data.query.search) || []).map((row) => row.title);
+  }
+
+  // Prefer the article whose title actually contains the words that were asked about,
+  // and avoid long spin-off titles that merely repeat them.
+  function scoreTitle(title, tokens) {
+    const titleTokens = tokenize(title).filter((word) => !QUERY_STOP.has(word));
+    const overlap = tokens.filter((token) =>
+      titleTokens.some(
+        (word) => word === token || word.startsWith(token) || token.startsWith(word)
+      )
+    ).length;
+    return overlap * 2 - Math.max(0, titleTokens.length - overlap) * 0.6;
+  }
+
+  async function wikiSearch(lang, text) {
+    const tokens = searchTokens(text);
+    if (!tokens.length) return [];
+
+    // Extra question words drag the ranking towards spin-offs, so search with the
+    // core of the question ("diary wimpy kid", not "…kid sold in italy").
+    let titles = await wikiTitles(lang, tokens.slice(0, 3).join(" "));
+    if (!titles.length && tokens.length > 2) {
+      titles = await wikiTitles(lang, tokens.slice(0, 2).join(" "));
+    }
+    if (!titles.length) return [];
+
+    const ranked = titles
+      .map((title) => ({ title, score: scoreTitle(title, tokens) }))
+      .filter((row) => row.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 2)
+      .map((row) => row.title);
+    if (!ranked.length) return [];
+
+    const data = await getJson(
+      `https://${lang}.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(
+        ranked.join("|")
+      )}&prop=extracts|info&inprop=url&explaintext=1&exlimit=max&redirects=1&format=json&origin=*`
+    );
+    const pages = Object.values((data && data.query && data.query.pages) || {});
+    const order = new Map(ranked.map((title, index) => [title, index]));
+
+    return pages
+      .sort((a, b) => (order.get(a.title) ?? 9) - (order.get(b.title) ?? 9))
+      .map((page) => ({
+        lang,
+        title: page.title,
+        url: page.fullurl,
+        text: String(page.extract || "").replace(/\n{3,}/g, "\n\n"),
+      }))
+      .filter((page) => page.text.length > 80);
+  }
+
+  const MONEY = [
+    { code: "EUR", re: /(\beur\b|\beuros?\b|€)/i },
+    { code: "USD", re: /(\busd\b|\bdollars?\b|\bdollari\b|\bdollaro\b|\$)/i },
+    { code: "GBP", re: /(\bgbp\b|\bpounds?\b|\bsterline\b|\bsterlina\b|£)/i },
+    { code: "JPY", re: /(\bjpy\b|\byen\b)/i },
+    { code: "CHF", re: /(\bchf\b|\bfranc[hi]\b)/i },
+  ];
+
+  function parseConversion(text) {
+    const amount = text.match(/(\d[\d.,]*)/);
+    if (!amount) return null;
+    const value = Number(amount[1].replace(/\.(?=\d{3}\b)/g, "").replace(",", "."));
+    if (!isFinite(value) || value <= 0) return null;
+
+    const hits = [];
+    for (const money of MONEY) {
+      const found = text.match(money.re);
+      if (found) hits.push({ code: money.code, at: found.index || 0 });
+    }
+    hits.sort((a, b) => a.at - b.at);
+
+    const codes = [];
+    for (const hit of hits) if (!codes.includes(hit.code)) codes.push(hit.code);
+    if (codes.length < 2) return null;
+
+    return { value, from: codes[0], to: codes[1] };
+  }
+
+  async function liveCurrency(text) {
+    const conv = parseConversion(text);
+    if (!conv) return null;
+    const data = await getJson(`https://open.er-api.com/v6/latest/${conv.from}`);
+    const rate = data && data.rates && data.rates[conv.to];
+    if (!rate) return null;
+    return {
+      line:
+        `Live exchange rate (published ${data.time_last_update_utc || "recently"}): ` +
+        `${conv.value} ${conv.from} = ${(conv.value * rate).toFixed(2)} ${conv.to}; ` +
+        `1 ${conv.from} = ${rate.toFixed(4)} ${conv.to}.`,
+      source: { title: "Live exchange rates", url: "https://www.exchangerate-api.com/" },
+    };
+  }
+
+  const CRYPTO = {
+    bitcoin: "bitcoin",
+    btc: "bitcoin",
+    ethereum: "ethereum",
+    eth: "ethereum",
+    solana: "solana",
+    dogecoin: "dogecoin",
+    doge: "dogecoin",
+    ripple: "ripple",
+    xrp: "ripple",
+    cardano: "cardano",
+    litecoin: "litecoin",
+  };
+
+  async function liveCrypto(text) {
+    if (!/(price|worth|cost|value|prezzo|vale|quanto costa)/i.test(text)) return null;
+    const ids = [];
+    for (const [word, id] of Object.entries(CRYPTO)) {
+      if (new RegExp(`\\b${word}\\b`, "i").test(text) && !ids.includes(id)) ids.push(id);
+    }
+    if (!ids.length) return null;
+
+    const data = await getJson(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(
+        ","
+      )}&vs_currencies=eur,usd&include_last_updated_at=true`
+    );
+
+    const lines = [];
+    for (const id of ids) {
+      const row = data && data[id];
+      if (!row) continue;
+      lines.push(`${id[0].toUpperCase() + id.slice(1)}: €${row.eur} / $${row.usd}`);
+    }
+    if (!lines.length) return null;
+
+    const stamp = data[ids[0]] && data[ids[0]].last_updated_at;
+    return {
+      line:
+        `Live crypto prices${stamp ? `, ${new Date(stamp * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC` : ""}: ` +
+        lines.join("; ") +
+        ".",
+      source: { title: "CoinGecko prices", url: "https://www.coingecko.com/" },
+    };
+  }
+
+  const PLACE_STOP = new Set(
+    ("the my a an il la lo le gli i di del della oggi domani today tomorrow now adesso " +
+      "right just exactly currently current moment tonight morning evening afternoon " +
+      "weekend week questa questo this next there here qui qua please per favore fuori " +
+      "outside oggi domani stasera stamattina proprio").split(" ")
+  );
+
+  function placeCandidates(text) {
+    const found = text.match(/\b(?:in|at|near|a|di|per)\s+([\p{L}'’.-]{3,}(?:\s+[\p{L}'’.-]{2,}){0,2})/u);
+    if (!found) return [];
+
+    const words = found[1]
+      .split(/\s+/)
+      .filter((word) => word.length > 1 && !PLACE_STOP.has(word.toLowerCase()));
+
+    const candidates = [];
+    if (words.length > 1) candidates.push(words.slice(0, 2).join(" "));
+    if (words.length) candidates.push(words[0]);
+
+    return candidates.map((place) => place.replace(/[.,;:!?]+$/, "")).filter(Boolean);
+  }
+
+  async function geocode(place) {
+    const geo = await getJson(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
+        place
+      )}&count=5&language=${uiLang()}&format=json`
+    );
+    const results = (geo && geo.results) || [];
+    if (!results.length) return null;
+    // Several places can share a name; the busy one is almost always meant.
+    return results.reduce((best, row) =>
+      (row.population || 0) > (best.population || 0) ? row : best
+    );
+  }
+
+  async function liveWeather(text) {
+    let loc = null;
+    for (const place of placeCandidates(text)) {
+      loc = await geocode(place);
+      if (loc) break;
+    }
+    if (!loc) return null;
+
+    const data = await getJson(
+      `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}` +
+        `&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m` +
+        `&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
+        `&forecast_days=2&timezone=auto`
+    );
+    const cur = data && data.current;
+    if (!cur) return null;
+    const day = data.daily || {};
+    const at = (key) => (Array.isArray(day[key]) ? day[key][0] : "?");
+
+    return {
+      line:
+        `Live weather, ${[loc.name, loc.country].filter(Boolean).join(", ")}: ` +
+        `${cur.temperature_2m}°C (feels like ${cur.apparent_temperature}°C), wind ${cur.wind_speed_10m} km/h, ` +
+        `humidity ${cur.relative_humidity_2m}%, precipitation ${cur.precipitation} mm, ` +
+        `WMO condition ${cur.weather_code}. Today: high ${at("temperature_2m_max")}°C, ` +
+        `low ${at("temperature_2m_min")}°C, rain chance ${at("precipitation_probability_max")}%. ` +
+        `(WMO codes: 0 clear, 1-3 partly cloudy, 45-48 fog, 51-67 drizzle/rain, 71-77 snow, ` +
+        `80-82 showers, 95-99 thunderstorm.)`,
+      source: { title: `Weather · ${loc.name}`, url: "https://open-meteo.com/" },
+    };
+  }
+
+  function looksLikeFactQuestion(text) {
+    const trimmed = text.trim();
+    if (trimmed.length < 12) return false;
+    if (/^(write|draft|rewrite|translate|summarise|summarize|scrivimi|traduci|riassumi)\b/i.test(trimmed)) {
+      return false;
+    }
+    return (
+      /\?/.test(trimmed) ||
+      /\b(who|what|when|where|why|how|which|is|are|was|were|does|did|can)\b/i.test(trimmed) ||
+      /(^|[\s,;])(chi|cosa|come|quando|dove|perch[eé]|quale|quali|quanti|quante|quanto|quanta)([\s,;?!.]|$)/i.test(trimmed) ||
+      /\b(today|now|current|latest|recent|oggi|adesso|attuale|ultimi|ultime|2026)\b/i.test(trimmed)
+    );
+  }
+
+  const wikiCache = new Map();
+
+  async function cachedWikiSearch(lang, text) {
+    const key = `${lang}:${searchTokens(text).join(" ")}`;
+    const hit = wikiCache.get(key);
+    if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.value;
+    try {
+      const value = await wikiSearch(lang, text);
+      wikiCache.set(key, { at: Date.now(), value });
+      return value;
+    } catch (_) {
+      return []; // Wikipedia pacing us, or offline: the answer just goes unhelped
+    }
+  }
+
+  async function wikiLookup(text) {
+    const articles = [];
+    for (const lang of [...new Set([uiLang(), "en"])]) {
+      const found = await cachedWikiSearch(lang, text);
+      for (const page of found) {
+        if (!articles.some((article) => article.url === page.url)) articles.push(page);
+      }
+      if (articles.length >= 2) break;
+    }
+    return articles.slice(0, 3);
+  }
+
+  async function gatherLive(text) {
+    if (!text) return null;
+    const lower = text.toLowerCase();
+    const wantsWeather = /\b(weather|forecast|temperature|rain|umbrella|meteo|temperatura|pioggia|piove|nevica|caldo|freddo)\b/.test(lower);
+    const wantsCrypto = /\b(bitcoin|btc|ethereum|eth|solana|dogecoin|doge|xrp|cardano|litecoin)\b/.test(lower);
+    const wantsMoney = /(\d[\d.,]*)\s*(€|\$|£|\beur\b|\beuros?\b|\busd\b|\bdollars?\b|\bdollari\b|\bgbp\b|\bpounds?\b|\bsterline\b|\byen\b|\bjpy\b)/i.test(text);
+
+    const tasks = [];
+    if (wantsWeather) tasks.push(liveWeather(text));
+    if (wantsCrypto) tasks.push(liveCrypto(text));
+    if (wantsMoney) tasks.push(liveCurrency(text));
+
+    const numbers = (await Promise.allSettled(tasks))
+      .filter((result) => result.status === "fulfilled" && result.value)
+      .map((result) => result.value);
+
+    let articles = [];
+    if (!numbers.length && !wantsWeather && looksLikeFactQuestion(text)) {
+      articles = await wikiLookup(text);
+    }
+
+    if (!numbers.length && !articles.length) return null;
+
+    const parts = [
+      `LIVE INFO — fetched ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC ` +
+        `from public sources (Wikipedia, Open-Meteo, exchange-rate and CoinGecko APIs). ` +
+        `These are current, checkable facts; prefer them over memory.`,
+    ];
+    const sources = [];
+
+    for (const item of numbers) {
+      parts.push(item.line);
+      if (item.source) sources.push(item.source);
+    }
+
+    let budget = MAX_CONTEXT_CHARS;
+    for (const page of articles.slice(0, 3)) {
+      if (budget < 300) break;
+      const body = page.text.slice(0, Math.min(2400, budget));
+      budget -= body.length;
+      parts.push(`[Wikipedia · ${page.lang}] ${page.title} — ${page.url}\n${body}`);
+      sources.push({ title: `${page.title} · Wikipedia`, url: page.url });
+    }
+
+    return { block: parts.join("\n\n"), sources };
+  }
+
+  function currentQuestion() {
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      if (history[i].role === "user") return history[i].content;
+    }
+    return "";
+  }
+
+  function attachSources(body, live) {
+    if (!live || !live.sources || !live.sources.length) return;
+    body.querySelectorAll(".sources").forEach((node) => node.remove());
+
+    const seen = [];
+    for (const source of live.sources) {
+      if (source && source.url && !seen.some((item) => item.url === source.url)) seen.push(source);
+    }
+    if (!seen.length) return;
+
+    const line = document.createElement("p");
+    line.className = "sources";
+    line.append(document.createTextNode("Looked up: "));
+    seen.slice(0, 4).forEach((source, index) => {
+      if (index) line.append(document.createTextNode(" · "));
+      const link = document.createElement("a");
+      link.href = source.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = source.title;
+      line.append(link);
+    });
+    body.append(line);
+  }
+
+  /* ------------------------------------------------------------------ *
    * Brains
    * ------------------------------------------------------------------ */
 
-  function buildMessages() {
-    return [{ role: "system", content: SYSTEM_PROMPT }, ...history];
+  function buildMessages(live) {
+    const system = SYSTEM_PROMPT + (live && live.block ? LIVE_INSTRUCTIONS : "");
+    const messages = [{ role: "system", content: system }, ...history];
+    if (live && live.block) messages.push({ role: "system", content: live.block });
+    return messages;
   }
 
   function puterReady() {
@@ -306,7 +709,7 @@
   }
 
   /** Keyless public endpoint. Throws with .rateLimit when it is pacing us. */
-  async function askKeyless(body) {
+  async function askKeyless(body, live) {
     const controller = new AbortController();
     aborter = controller;
     const timer = setTimeout(() => {
@@ -319,7 +722,7 @@
       response = await fetch(KEYLESS_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "openai-fast", messages: buildMessages() }),
+        body: JSON.stringify({ model: "openai-fast", messages: buildMessages(live) }),
         signal: controller.signal,
       });
     } catch (error) {
@@ -362,8 +765,8 @@
   }
 
   /** Optional free account: streams tokens as they arrive. */
-  async function askPuter(body) {
-    const response = await window.puter.ai.chat(buildMessages(), { stream: true });
+  async function askPuter(body, live) {
+    const response = await window.puter.ai.chat(buildMessages(live), { stream: true });
     let full = "";
 
     if (response && typeof response[Symbol.asyncIterator] === "function") {
@@ -486,17 +889,26 @@
       body.append(line);
     }, PATIENCE_HINT_MS);
 
+    let live = null;
     try {
-      await attempt(body);
+      live = await gatherLive(currentQuestion());
+    } catch (_) {
+      live = null; // a lookup is a bonus: never hold the answer up for it
+    }
+
+    try {
+      await attempt(body, live);
     } finally {
       clearTimeout(hint);
     }
   }
 
-  async function attempt(body) {
+  async function attempt(body, live) {
     if (puterReady()) {
       try {
-        return rememberTurn(await askPuter(body));
+        const streamed = await askPuter(body, live);
+        attachSources(body, live);
+        return rememberTurn(streamed);
       } catch (error) {
         if (error.partial) {
           // Keep what arrived, and say so instead of silently retrying.
@@ -508,7 +920,9 @@
     }
 
     try {
-      return rememberTurn(await askKeyless(body));
+      const answer = await askKeyless(body, live);
+      attachSources(body, live);
+      return rememberTurn(answer);
     } catch (error) {
       body.innerHTML = "";
       if (error.name === "AbortError" || stopRequested) {
