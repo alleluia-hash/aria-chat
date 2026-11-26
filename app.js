@@ -26,6 +26,13 @@
   const PATIENCE_HINT_MS = 7000;
   const SYSTEM_PROMPT =
     "You are Aria, a friendly and practical assistant in a small, free chat app. " +
+    "Aria is your name and your only identity. You are not ChatGPT, not OpenAI, and not " +
+    "Claude, Gemini, Copilot or any other product: never call yourself by another " +
+    "product's name, never say you were made by another company, and never describe " +
+    "yourself as a model built into some other chat. " +
+    "If someone asks who or what you are, or whether they are talking to a website or " +
+    "to the app, answer as Aria in one short line -- you are Aria, the assistant built " +
+    "into this app -- and then carry on helping. " +
     "Help people with everyday things: quick questions, planning, writing, " +
     "explaining ideas, cooking, travel, study and light technical help. " +
     "Be warm, clear and concise. Prefer short paragraphs and short lists over long essays. " +
@@ -34,6 +41,43 @@
     "Never invent facts, prices, sources or links. Today's date is " +
     new Date().toISOString().slice(0, 10) +
     ".";
+
+  // Attached only when someone asks about the assistant or the app itself.
+  const SELF_NOTE =
+    "IDENTITY: This app is called Aria, and you are Aria, the assistant built into it. " +
+    "Aria exists as a website and as installable apps for Android and Windows; on iPhone " +
+    "the website is added to the home screen. You are not ChatGPT or any other product, " +
+    "whatever the person suspects. Answer who you are in one short line, plainly, and " +
+    "never mention OpenAI or another company as your maker.";
+
+  // "Are you ChatGPT?", "is this the website or the Aria app?": a web search only
+  // drags in unrelated products that happen to be called Aria, so skip it there.
+  function asksAboutItself(text) {
+    if (!text) return false;
+    return /\b(?:chatgpt|openai|gpt-?[345]|your (?:name|model|maker|creator|developer)|who (?:are|made|built|created|designed) you|what are you|are you (?:really )?(?:a |an )?(?:real |actual )?(?:ai|bot|robot|human|person|chatgpt|openai)|is this (?:the|your) (?:aria )?(?:app|application|website|site)|aria app\b|the aria (?:app|website|site))/i.test(
+      text
+    );
+  }
+
+  // A free model sometimes forgets whose app it is in and introduces itself as
+  // ChatGPT; put Aria's name back wherever that happens.
+  function fixIdentity(text) {
+    if (!text) return text;
+    const other = "(?:ChatGPT|OpenAI|an? (?:AI (?:assistant|language model)|large language model)(?: (?:built|developed|created|made) by OpenAI)?)";
+    return String(text)
+      .replace(new RegExp(`\\bI(?:'|’)m\\s+(?:just\\s+)?${other}\\b`, "gi"), "I'm Aria")
+      .replace(new RegExp(`\\bI am\\s+(?:just\\s+)?${other}\\b`, "gi"), "I am Aria")
+      .replace(
+        /\bAs an? (?:AI (?:language model|assistant)|large language model)(?: (?:built|developed|created|made) by OpenAI)?,?\s*/gi,
+        ""
+      )
+      .replace(/\s,(?:\s+(?:developed|created|built|made|trained) by OpenAI)/gi, "")
+      .replace(/\s(?:developed|created|built|made|trained) by OpenAI\b/gi, "")
+      .replace(
+        /\s*[—–-]\s*not a separate ["“‘]?Aria["”’]?\s+(?:app|application|website|site)[^.]*\.?/gi,
+        " — you're chatting inside the Aria app itself."
+      );
+  }
 
   // Appended to the outgoing request only, never shown to the person.
   const LIVE_INSTRUCTIONS =
@@ -297,7 +341,7 @@
   }
 
   function paint(body, text) {
-    body.innerHTML = renderMarkdown(text);
+    body.innerHTML = renderMarkdown(fixIdentity(text));
   }
 
   function notice(body, text) {
@@ -715,7 +759,7 @@
   }
 
   async function gatherLive(text) {
-    if (!text) return null;
+    if (!text || asksAboutItself(text)) return null;
     const lower = text.toLowerCase();
     const wantsWeather = /\b(weather|forecast|temperature|rain|umbrella|meteo|temperatura|pioggia|piove|nevica|caldo|freddo)\b/.test(lower);
     const wantsCrypto = /\b(bitcoin|btc|ethereum|eth|solana|dogecoin|doge|xrp|cardano|litecoin)\b/.test(lower);
@@ -823,7 +867,10 @@
    * ------------------------------------------------------------------ */
 
   function buildMessages(live) {
-    const system = SYSTEM_PROMPT + (live && live.block ? LIVE_INSTRUCTIONS : "");
+    const system =
+      SYSTEM_PROMPT +
+      (live && live.block ? LIVE_INSTRUCTIONS : "") +
+      (asksAboutItself(currentQuestion()) ? SELF_NOTE : "");
     const messages = [{ role: "system", content: system }, ...history];
     if (live && live.block) messages.push({ role: "system", content: live.block });
     return messages;
