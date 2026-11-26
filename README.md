@@ -42,6 +42,30 @@ An installed app carries its own copy of `index.html`, `app.js` and
 `styles.css`, so it never changes by itself: it keeps running the code it was
 installed with until a newer APK is installed.
 
+### The itch.io page
+
+itch.io has no "watch this repository" switch, so a page filled in by hand has
+to be uploaded again by hand. The way around that is `butler`, itch.io's own
+command-line uploader: the same workflow that publishes the GitHub release
+pushes the finished build to the page right after it, so a new version reaches
+itch.io without anyone clicking anything.
+
+The upload stays off until two things exist in this repository:
+
+| Where to add it | Name | Value |
+| --- | --- | --- |
+| Settings -> Secrets and variables -> Actions -> **Secrets** | `BUTLER_API_KEY` | your itch.io API key, from <https://itch.io/user/settings/api-keys> |
+| Settings -> Secrets and variables -> Actions -> **Variables** | `ITCH_PROJECT` | your page address without `https://` and `.itch.io`, e.g. `yourname/aria-chat` |
+
+With both in place, every run pushes two channels, and both are downloads —
+nothing on the page is played in the browser:
+
+- `windows` - `Aria.exe` with the page files next to it
+- `android` - `Aria.apk`
+
+Each push is stamped with the version from `package/VERSION`, so the itch.io
+page and the GitHub release always show the same number.
+
 ### Hosting it for other people (GitHub Pages)
 
 1. In this repository: **Settings → Pages**
