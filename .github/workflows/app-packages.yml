@@ -1,0 +1,62 @@
+name: app packages
+
+# Builds the Android and Windows packages from source and attaches them to the
+# v1.0.0 release, so the release page always has working downloads.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "package/**"
+      - ".github/workflows/app-packages.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-mingw-w64-x86-64 zip
+
+      - name: Windows launcher
+        run: |
+          mkdir -p package/out
+          x86_64-w64-mingw32-gcc -O2 -s -Wl,--subsystem,windows \
+            package/windows/launcher.c -o package/out/Aria.exe -luser32 -lshell32
+          file package/out/Aria.exe
+
+      - name: Android app
+        run: bash package/android/build-apk.sh
+
+      - name: Assemble downloads
+        run: |
+          set -euo pipefail
+          rm -rf dist && mkdir -p dist/windows
+          cp package/out/Aria.exe dist/windows/
+          cp index.html app.js styles.css dist/windows/
+          cp package/windows/READ-ME.txt dist/windows/
+          cp package/WHAT-IS-IN-HERE.txt dist/
+          cp package/out/Aria.apk dist/
+          ( cd dist/windows && zip -q -9 -X ../Aria-Windows.zip Aria.exe index.html app.js styles.css READ-ME.txt )
+          mkdir -p bundle && cp dist/Aria.apk dist/Aria-Windows.zip package/WHAT-IS-IN-HERE.txt bundle/
+          ( cd bundle && zip -q -9 -X ../dist/Aria-app-packages.zip Aria.apk Aria-Windows.zip WHAT-IS-IN-HERE.txt )
+          ls -lh dist
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd dist
+          gh release upload v1.0.0 Aria.apk Aria-Windows.zip Aria-app-packages.zip --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aria-app-packages
+          path: dist/*.zip
