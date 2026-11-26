@@ -24,6 +24,24 @@ Then visit <http://localhost:3000>.
 
 There is nothing to install, no account, no key.
 
+### The Android and Windows apps
+
+The same page is also packaged as an Android APK and a Windows zip. GitHub
+Actions builds both on every push that touches the page and publishes them as
+a release named after `package/VERSION`:
+
+1. change something, then bump `package/VERSION` (`1.0.1` -> `1.0.2`)
+2. push to `main`
+
+The workflow then builds the APK (versionName `1.0.2`, versionCode `10002`),
+the Windows zip and the combined zip, and creates the release `v1.0.2`, which
+becomes the latest download at
+<https://github.com/alleluia-hash/aria-chat/releases/latest>.
+
+An installed app carries its own copy of `index.html`, `app.js` and
+`styles.css`, so it never changes by itself: it keeps running the code it was
+installed with until a newer APK is installed.
+
 ### Hosting it for other people (GitHub Pages)
 
 1. In this repository: **Settings → Pages**

@@ -13,6 +13,16 @@ WORK="$(mktemp -d)"
 OUT="${OUT:-$ROOT/package/out}"
 mkdir -p "$OUT"
 
+# The version lives in package/VERSION: "1.0.1" becomes versionName 1.0.1 and
+# versionCode 10001, so each release sorts higher than the one before it.
+VERSION_FILE="$ROOT/package/VERSION"
+[ -f "$VERSION_FILE" ] || { echo "package/VERSION is missing" >&2; exit 1; }
+VERSION_NAME="${VERSION_NAME:-$(tr -d ' \t\r\n' < "$VERSION_FILE")}"
+IFS=. read -r V_MAJOR V_MINOR V_PATCH <<< "$VERSION_NAME" || true
+V_MAJOR="${V_MAJOR:-0}"; V_MINOR="${V_MINOR:-0}"; V_PATCH="${V_PATCH:-0}"
+VERSION_CODE="${VERSION_CODE:-$((10#$V_MAJOR * 10000 + 10#$V_MINOR * 100 + 10#$V_PATCH))}"
+echo "Building Aria $VERSION_NAME (versionCode $VERSION_CODE)"
+
 SDKMANAGER="$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1 || true)"
 if [ -n "$SDKMANAGER" ]; then
   yes | "$SDKMANAGER" --sdk_root="$SDK" "build-tools;${BUILD_TOOLS}" "platforms;${PLATFORM}" >/dev/null || true
@@ -41,7 +51,8 @@ java -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 --min-api 24 --lib "$AJ" \
 unzip -q -o "$WORK/res.zip" -d "$WORK/flat"
 "$BT/aapt2" link -o "$WORK/base.apk" -I "$AJ" \
   --manifest "$WORK/AndroidManifest.xml" -A "$WORK/assets" \
-  --min-sdk-version 24 --target-sdk-version 34 --version-code 1 --version-name 1.0 \
+  --min-sdk-version 24 --target-sdk-version 34 \
+  --version-code "$VERSION_CODE" --version-name "$VERSION_NAME" \
   $(find "$WORK/flat" -name '*.flat')
 
 (cd "$WORK/dex" && zip -q -X "$WORK/base.apk" classes.dex)
@@ -61,3 +72,4 @@ fi
   --out "$OUT/Aria.apk" "$WORK/aligned.apk"
 "$BT/apksigner" verify --print-certs "$OUT/Aria.apk" | head -3
 ls -lh "$OUT/Aria.apk"
+echo "Built Aria $VERSION_NAME (versionCode $VERSION_CODE)"

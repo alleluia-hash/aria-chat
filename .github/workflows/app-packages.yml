@@ -1,8 +1,8 @@
 name: app packages
 
 # Builds the Android and Windows packages from source and attaches them to the
-# v1.0.0 release, so the release page always has working downloads without
-# anybody uploading binaries by hand.
+# release named after package/VERSION (v1.0.1, v1.0.2, ...). Bump that file
+# when you want a new version; every push rebuilds the downloads.
 
 on:
   workflow_dispatch:
@@ -62,8 +62,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+          VERSION="$(tr -d ' \t\r\n' < package/VERSION)"
+          TAG="v$VERSION"
+          echo "Publishing $TAG from $GITHUB_SHA"
+          NOTES="$(printf '%s\n\n%s\n%s\n%s\n\n%s\n' \
+            "Aria $VERSION for Android and Windows." \
+            "- Aria.apk - the Android app. Tap it on the phone to install." \
+            "- Aria-Windows.zip - unzip it, then double-click Aria.exe." \
+            "- Aria-app-packages.zip - both of the above in one download." \
+            "iPhone: there is no .ipa. Open https://alleluia-hash.github.io/aria-chat/ in Safari, then Share -> Add to Home Screen.")"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::warning::$TAG already exists, so its downloads were rebuilt. Bump package/VERSION for a new version."
+          else
+            gh release create "$TAG" --title "Aria $VERSION" --target "$GITHUB_SHA" --notes "$NOTES"
+          fi
           cd dist
-          gh release upload v1.0.0 Aria.apk Aria-Windows.zip Aria-app-packages.zip --clobber
+          gh release upload "$TAG" Aria.apk Aria-Windows.zip Aria-app-packages.zip --clobber
 
       - uses: actions/upload-artifact@v4
         with:
