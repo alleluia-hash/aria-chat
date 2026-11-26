@@ -1,4 +1,10 @@
-# Aria
+<p align="center">
+  <a href="https://alleluia-hash.github.io/aria-chat/">
+    <img src="assets/banner.svg" alt="Aria — a calm, free AI assistant for Android, Windows, iPhone and the web" width="100%">
+  </a>
+</p>
+
+[**Open Aria in your browser**](https://alleluia-hash.github.io/aria-chat/) &nbsp;·&nbsp; [Android (.apk)](https://github.com/alleluia-hash/aria-chat/releases/latest) &nbsp;·&nbsp; [Windows (.zip)](https://github.com/alleluia-hash/aria-chat/releases/latest) &nbsp;·&nbsp; [itch.io](https://doggieeee.itch.io/aria-ai)
 
 A small, free AI assistant for everyday questions. One page, no build step, no API keys of your own, no backend, no tracking.
 
