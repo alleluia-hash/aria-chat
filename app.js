@@ -7,9 +7,10 @@
  *      replies stream instantly and the pacing doesn't apply.
  *
  * Live lookups: before answering a factual or "right now" question, the app
- * fetches public sources straight from the browser (Wikipedia in the visitor's
- * language, Open-Meteo weather, exchange rates, CoinGecko prices) and hands the
- * result to the model as evidence, with links shown under the reply.
+ * searches the web from the browser (DuckDuckGo results read through the public
+ * r.jina.ai reader) and fetches public sources (Wikipedia in the visitor's
+ * language, Open-Meteo weather, exchange rates, CoinGecko prices), then hands
+ * the result to the model as evidence, with links shown under the reply.
  *
  * Chats live only in this browser (localStorage). Messages are sent to
  * whichever model provider answers; there is no analytics or tracking here.
@@ -38,6 +39,13 @@
   const LIVE_INSTRUCTIONS =
     " A LIVE INFO block may be attached after the conversation. When it is: base every " +
     "factual claim on it, quote its numbers as given, and link the sources you used. " +
+    "When it holds WEB SEARCH RESULTS, those are fresh snippets from real sites: prefer a " +
+    "figure stated there over memory, name the site it came from, and use them to make " +
+    "the answer specific rather than general. " +
+    "Start with the direct answer in one short line, then at most two or three sentences of " +
+    "support. When several results give different numbers for the same thing, do not average " +
+    "or merge them: give the newest figure first with its site and date, then note that an " +
+    "older source says something different. " +
     "If the exact figure or detail the person asked for is not in it, say plainly that " +
     "it is not publicly published — never invent, round or guess a number. Never say " +
     "you cannot access the internet: this app looks things up for you. If the block " +
@@ -323,6 +331,18 @@
     }
   }
 
+  async function getText(url, ms) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+      const response = await fetch(url, { signal: controller.signal, mode: "cors" });
+      if (!response.ok) throw new Error(`lookup ${response.status}`);
+      return await response.text();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // Question words and filler make Wikipedia rank the wrong article, so they go.
   const QUERY_STOP = new Set(
     ("how many much who what when where why which is are was were do does did can could " +
@@ -404,6 +424,96 @@
         text: String(page.extract || "").replace(/\n{3,}/g, "\n\n"),
       }))
       .filter((page) => page.text.length > 80);
+  }
+
+  /* --- real web search -------------------------------------------------
+   * DuckDuckGo's lite result page, read through r.jina.ai: a public reader that
+   * turns a page into plain text and answers browsers directly, so no key, no
+   * proxy of ours and no backend. Its free tier allows a few searches a minute;
+   * when it paces us the answer simply falls back to Wikipedia.
+   * ------------------------------------------------------------------- */
+
+  const WEB_SEARCH_URL = "https://r.jina.ai/https://lite.duckduckgo.com/lite/?q=";
+  const WEB_TIMEOUT_MS = 16000;
+  const webCache = new Map();
+
+  // The reader marks the words that matched as **bold**, sometimes glued together.
+  function cleanSnippet(line) {
+    return String(line)
+      .replace(/\*{4,}/g, " ")
+      .replace(/\*\*/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function realUrl(wrapped) {
+    try {
+      return new URL(wrapped).searchParams.get("uddg") || wrapped;
+    } catch (_) {
+      return wrapped;
+    }
+  }
+
+  function domainOf(url) {
+    try {
+      return new URL(url).hostname.replace(/^www\./, "");
+    } catch (_) {
+      return "web";
+    }
+  }
+
+  // Lines look like: 1.[Title](https://duckduckgo.com/l/?uddg=…) / snippet / domain.
+  function parseResults(markdown) {
+    const lines = String(markdown).split("\n");
+    const results = [];
+
+    for (let i = 0; i < lines.length; i += 1) {
+      const head = lines[i].match(/^\s*\d+\.\s*\[(.+?)\]\((https?:\/\/[^)\s]+)\)/);
+      if (!head) continue;
+
+      const snippet = [];
+      for (let j = i + 1; j < Math.min(i + 10, lines.length); j += 1) {
+        const line = lines[j].trim();
+        if (!line) {
+          if (snippet.length) break;
+          continue;
+        }
+        if (/^\d+\.\s*\[/.test(line)) break;
+        if (/^[\w.-]+\.[a-z]{2,}(\/\S*)?$/i.test(line)) break; // the bare domain line
+        snippet.push(line);
+      }
+
+      results.push({
+        title: cleanSnippet(head[1]),
+        url: realUrl(head[2]),
+        snippet: cleanSnippet(snippet.join(" ")).slice(0, 520),
+      });
+    }
+    return results;
+  }
+
+  async function webSearch(text) {
+    const query = text.replace(/[?!.\s]+$/, "").trim().slice(0, 180);
+    if (query.length < 4) return [];
+
+    const key = query.toLowerCase();
+    const hit = webCache.get(key);
+    if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.value;
+
+    const markdown = await getText(WEB_SEARCH_URL + encodeURIComponent(query), WEB_TIMEOUT_MS);
+    const results = parseResults(markdown)
+      .filter((row) => row.title && row.snippet.length > 50)
+      .slice(0, 6);
+    if (results.length) webCache.set(key, { at: Date.now(), value: results });
+    return results;
+  }
+
+  async function safeWebSearch(text) {
+    try {
+      return await webSearch(text);
+    } catch (_) {
+      return []; // paced or offline: the reply just goes unhelped
+    }
   }
 
   const MONEY = [
@@ -621,16 +731,24 @@
       .map((result) => result.value);
 
     let articles = [];
-    if (!numbers.length && !wantsWeather && looksLikeFactQuestion(text)) {
-      articles = await wikiLookup(text);
+    let results = [];
+    if (looksLikeFactQuestion(text)) {
+      // Search and encyclopaedia at the same time, so the lookup stays quick.
+      const [found, pages] = await Promise.all([
+        safeWebSearch(text),
+        numbers.length || wantsWeather ? Promise.resolve([]) : wikiLookup(text),
+      ]);
+      results = found;
+      articles = pages;
     }
 
-    if (!numbers.length && !articles.length) return null;
+    if (!numbers.length && !results.length && !articles.length) return null;
 
     const parts = [
       `LIVE INFO — fetched ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC ` +
-        `from public sources (Wikipedia, Open-Meteo, exchange-rate and CoinGecko APIs). ` +
-        `These are current, checkable facts; prefer them over memory.`,
+        `from a live web search and public sources (DuckDuckGo, Wikipedia, Open-Meteo, ` +
+        `exchange-rate and CoinGecko APIs). These are current, checkable facts; prefer ` +
+        `them over memory.`,
     ];
     const sources = [];
 
@@ -640,9 +758,26 @@
     }
 
     let budget = MAX_CONTEXT_CHARS;
+
+    if (results.length) {
+      const found = [];
+      for (const row of results) {
+        const entry = `• ${row.title} — ${row.url}\n  ${row.snippet}`;
+        if (budget - entry.length < 900) break;
+        budget -= entry.length;
+        found.push(entry);
+        sources.push({ title: domainOf(row.url), url: row.url });
+      }
+      if (found.length) {
+        parts.push(
+          "WEB SEARCH RESULTS — live snippets from real sites, most relevant first:\n\n" +
+            found.join("\n\n")
+        );
+      }
+    }
     for (const page of articles.slice(0, 3)) {
       if (budget < 300) break;
-      const body = page.text.slice(0, Math.min(2400, budget));
+      const body = page.text.slice(0, Math.min(1800, budget));
       budget -= body.length;
       parts.push(`[Wikipedia · ${page.lang}] ${page.title} — ${page.url}\n${body}`);
       sources.push({ title: `${page.title} · Wikipedia`, url: page.url });
