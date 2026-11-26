@@ -10,7 +10,7 @@ Aria is a normal chat window, the kind you'd use for the small things in a day: 
 
 It answers with Markdown: lists, **bold**, tables, and code blocks with a copy button. Your conversation stays in your browser and is there when you come back.
 
-When a question needs a fact or a number, it looks it up first — Wikipedia in your language, plus live weather, exchange rates and crypto prices — and puts the sources under the reply.
+When a question needs a fact or a number, she searches the web first — real search results, Wikipedia in your language, live weather, exchange rates and crypto prices — and puts the sources under the reply.
 
 ## Using it
 
@@ -55,18 +55,19 @@ Before answering a factual question, the page itself fetches a public source str
 
 | You ask | She reads |
 | --- | --- |
+| Almost anything factual | A live DuckDuckGo web search, read through the public r.jina.ai reader — titles, snippets and links from real sites |
 | Who, what, when, how many, how tall | Wikipedia, in your language and in English |
 | Weather | Open-Meteo, the same open data most weather apps use |
 | Currency | open.er-api.com exchange rates |
 | Crypto prices | CoinGecko |
 
-Each reply that used them ends with a small "Looked up:" line linking what she read, so you can check it yourself. And when the exact number you asked for was never published — sales of one book in one country, say — she tells you that, gives the nearest real figure clearly labelled, and does not invent one.
+Each reply that used them ends with a small "Looked up:" line linking what she read, so you can check it yourself. The search is what makes specific answers possible: ask how many copies a book sold in Italy and the snippets carry the figure, where an encyclopaedia alone would not have it. When the exact number you asked for really is not published anywhere in the results — or the sites disagree — she says so, gives the figures she found clearly labelled, and does not invent one.
 
 ## Privacy
 
 - No analytics, no cookies, no accounts required, no server of ours in the middle.
 - Conversations are stored only in this browser's `localStorage`.
-- The text you type is sent to the model provider that answers. The words you look up go to Wikipedia, Open-Meteo, the exchange-rate API and CoinGecko; nothing else leaves the page. Like every hosted AI, treat it as a third party: don't paste passwords, card numbers or anything you wouldn't put in a search box.
+- The text you type is sent to the model provider that answers. The words you look up go to DuckDuckGo and the r.jina.ai reader, then to Wikipedia, Open-Meteo, the exchange-rate API and CoinGecko; nothing else leaves the page. Like every hosted AI, treat it as a third party: don't paste passwords, card numbers or anything you wouldn't put in a search box.
 - "New chat" clears the conversation from this browser.
 
 ## Files
@@ -85,7 +86,8 @@ The default lane uses the keyless `openai-fast` endpoint. If you'd rather use yo
 
 ## Limits, honestly
 
-- It is not GPT-5-class at long reasoning or maths. It can read the handful of public sources listed above, but it cannot open arbitrary web pages, social posts or paywalled sites, and it is not a general web browser.
+- It is not GPT-5-class at long reasoning or maths. She reads the search results and the public sources listed above, so she can answer with real, current figures, but she reads snippets rather than full articles, and she cannot get past a paywall or a site that blocks readers.
+- Search runs through a free public reader, which allows a handful of searches a minute; when it is busy she falls back to Wikipedia and says what she used.
 - Compressed conversations can lose detail; start a new chat for a new topic.
 - Free public endpoints can be slow or briefly unavailable. The app tells you instead of pretending.
 - Replies can be wrong. Check anything that matters — medical, legal, money.
