@@ -38,7 +38,13 @@ node "$ROOT/package/android/icon.js" "$WORK/res"
 
 cp "$ROOT/index.html" "$ROOT/app.js" "$ROOT/styles.css" "$WORK/assets/web/"
 cp "$ROOT/package/android/MainActivity.java" "$WORK/src/"
-cp "$ROOT/package/android/AndroidManifest.xml" "$WORK/AndroidManifest.xml"
+# aapt2 keeps the version already written in the manifest, so stamp ours in
+# instead of relying on its --version-name/--version-code flags.
+sed -e "s/android:versionCode=\"[^\"]*\"/android:versionCode=\"$VERSION_CODE\"/" \
+    -e "s/android:versionName=\"[^\"]*\"/android:versionName=\"$VERSION_NAME\"/" \
+    "$ROOT/package/android/AndroidManifest.xml" > "$WORK/AndroidManifest.xml"
+grep -q "android:versionName=\"$VERSION_NAME\"" "$WORK/AndroidManifest.xml" \
+  || { echo "could not stamp $VERSION_NAME into the manifest" >&2; exit 1; }
 
 javac -encoding UTF-8 -source 8 -target 8 \
   -bootclasspath "$AJ" -classpath "$AJ" \
