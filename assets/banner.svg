@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 400" width="1280" height="400" role="img" aria-label="Aria — a calm, free AI assistant for Android, Windows, iPhone and the web">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b1b1a"/>
+      <stop offset="0.55" stop-color="#141413"/>
+      <stop offset="1" stop-color="#0d0d0c"/>
+    </linearGradient>
+    <radialGradient id="warm" cx="0.78" cy="0.18" r="0.72">
+      <stop offset="0" stop-color="#8d8371" stop-opacity="0.28"/>
+      <stop offset="0.55" stop-color="#6d6455" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="cool" cx="0.08" cy="0.95" r="0.6">
+      <stop offset="0" stop-color="#7f8694" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="cardline" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4a4741" stop-opacity="0.9"/>
+      <stop offset="0.6" stop-color="#2b2a26" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#242320" stop-opacity="0.5"/>
+    </linearGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f2f1ee" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#f2f1ee" stop-opacity="0.02"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="400" fill="url(#bg)"/>
+  <rect width="1280" height="400" fill="url(#warm)"/>
+  <rect width="1280" height="400" fill="url(#cool)"/>
+
+  <!-- chat card, right side -->
+  <g>
+    <rect x="742" y="86" width="456" height="228" rx="22" fill="#151514" stroke="url(#cardline)" stroke-width="1.5"/>
+    <rect x="742" y="86" width="456" height="60" rx="22" fill="#1a1a19"/>
+    <rect x="742" y="124" width="456" height="22" fill="#1a1a19"/>
+    <circle cx="774" cy="116" r="5" fill="#3c3a35"/>
+    <circle cx="793" cy="116" r="5" fill="#332f2a"/>
+    <circle cx="812" cy="116" r="5" fill="#2b2925"/>
+    <text x="1170" y="121" text-anchor="end" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" fill="#7c7972">Aria</text>
+
+    <!-- user bubble -->
+    <rect x="948" y="168" width="222" height="50" rx="16" fill="#26251f"/>
+    <rect x="970" y="184" width="150" height="7" rx="3.5" fill="#514d44"/>
+    <rect x="970" y="198" width="96" height="7" rx="3.5" fill="#463f36"/>
+
+    <!-- reply bubble -->
+    <rect x="770" y="234" width="286" height="62" rx="18" fill="#1d1d1b" stroke="#2e2c27" stroke-width="1"/>
+    <rect x="792" y="252" width="228" height="7" rx="3.5" fill="#5c584f"/>
+    <rect x="792" y="266" width="176" height="7" rx="3.5" fill="#4a463e"/>
+    <rect x="792" y="280" width="118" height="7" rx="3.5" fill="#3b3830"/>
+
+    <!-- sparkle -->
+    <g fill="#cfc7b4" opacity="0.75">
+      <path d="M1156 176 l4.5 11.5 11.5 4.5 -11.5 4.5 -4.5 11.5 -4.5 -11.5 -11.5 -4.5 11.5 -4.5 z"/>
+    </g>
+  </g>
+
+  <!-- left: wordmark -->
+  <text x="88" y="120" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" letter-spacing="3.4" fill="#8f8b81">FREE · NO SIGN-UP · NO API KEY</text>
+
+  <text x="86" y="218" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="112" font-weight="300" letter-spacing="-3" fill="#f4f3ef">Aria</text>
+
+  <rect x="90" y="242" width="368" height="1.5" fill="url(#rule)"/>
+
+  <text x="88" y="288" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="22" fill="#b6b2a8">A calm assistant for the small things in your day.</text>
+  <text x="88" y="318" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="18" fill="#817d74">Plans, emails, recipes, a letter from the bank.</text>
+
+  <!-- platform pills -->
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" fill="#cfcbc2" letter-spacing="0.3">
+    <rect x="88" y="340" width="106" height="34" rx="17" fill="#1c1c1a" stroke="#35322c" stroke-width="1.2"/>
+    <text x="141" y="362" text-anchor="middle">Android</text>
+
+    <rect x="204" y="340" width="104" height="34" rx="17" fill="#1c1c1a" stroke="#35322c" stroke-width="1.2"/>
+    <text x="256" y="362" text-anchor="middle">Windows</text>
+
+    <rect x="318" y="340" width="92" height="34" rx="17" fill="#1c1c1a" stroke="#35322c" stroke-width="1.2"/>
+    <text x="364" y="362" text-anchor="middle">iPhone</text>
+
+    <rect x="420" y="340" width="78" height="34" rx="17" fill="#1c1c1a" stroke="#35322c" stroke-width="1.2"/>
+    <text x="459" y="362" text-anchor="middle">Web</text>
+  </g>
+</svg>
