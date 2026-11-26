@@ -1,0 +1,14 @@
+Aria - Windows
+==============
+
+Double-click Aria.exe. Aria opens in her own clean window - no address bar,
+no tabs, nothing to install.
+
+Keep the whole folder together: Aria.exe reads index.html, app.js and
+styles.css from the folder it sits in. If you unzip, unzip everything.
+
+Aria.exe uses the Edge (or Chrome) that is already on your PC to draw the
+window, so the download is 40 KB instead of 150 MB. Windows 10 and 11 both
+have Edge built in.
+
+If you move the folder somewhere new, just run Aria.exe from the new spot.
