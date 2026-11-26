@@ -29,19 +29,6 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Give Aria her own name (one-time)
-        run: |
-          python3 package/apply-identity-fix.py
-          if git diff --quiet app.js; then
-            echo "app.js already carries the fix"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app.js
-          git commit -m "Give Aria her own name in her own answers"
-          git push
-
       - name: Install toolchain
         run: |
           sudo apt-get update -qq
