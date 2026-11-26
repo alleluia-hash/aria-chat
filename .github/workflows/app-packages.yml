@@ -3,6 +3,8 @@ name: app packages
 # Builds the Android and Windows packages from source and attaches them to the
 # release named after package/VERSION (v1.0.1, v1.0.2, ...). Bump that file
 # when you want a new version; every push rebuilds the downloads.
+# If the itch.io settings exist (see README), the same build is also pushed to
+# the itch.io page automatically, so the two never drift apart.
 
 on:
   workflow_dispatch:
@@ -53,7 +55,7 @@ jobs:
           cp package/windows/READ-ME.txt dist/windows/
           cp package/WHAT-IS-IN-HERE.txt dist/
           cp package/out/Aria.apk dist/
-          ( cd dist/windows && zip -q -9 -X ../Aria-Windows.zip Aria.exe index.html app.js styles.css READ-ME.txt )
+          ( cd dist/windows && zip -q -9 -X ../Aria-Windows.zip Aria.exe index.html app.js styles.css README.txt )
           mkdir -p bundle && cp dist/Aria.apk dist/Aria-Windows.zip package/WHAT-IS-IN-HERE.txt bundle/
           ( cd bundle && zip -q -9 -X ../dist/Aria-app-packages.zip Aria.apk Aria-Windows.zip WHAT-IS-IN-HERE.txt )
           ls -lh dist
@@ -79,6 +81,40 @@ jobs:
           fi
           cd dist
           gh release upload "$TAG" Aria.apk Aria-Windows.zip Aria-app-packages.zip --clobber
+
+      # The itch.io upload stays switched off until BOTH of these exist:
+      #   secret   BUTLER_API_KEY   your itch.io API key
+      #   variable ITCH_PROJECT     your page as user/game, e.g. alleluia-hash/aria
+      # See README.md, "The itch.io page".
+      - name: Check for itch.io settings
+        id: itch
+        env:
+          ITCH_KEY: ${{ secrets.BUTLER_API_KEY }}
+          ITCH_PROJECT: ${{ vars.ITCH_PROJECT }}
+        run: |
+          if [ -n "$ITCH_KEY" ] && [ -n "$ITCH_PROJECT" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping the itch.io upload. Add the BUTLER_API_KEY secret and the ITCH_PROJECT variable to switch it on."
+          fi
+
+      - name: Publish to itch.io
+        if: steps.itch.outputs.ready == 'true'
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+          ITCH_PROJECT: ${{ vars.ITCH_PROJECT }}
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d ' \t\r\n' < package/VERSION)"
+          echo "Pushing Aria $VERSION to $ITCH_PROJECT"
+          curl -fsSL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q -o butler.zip -d butler-dl
+          BUTLER="$(find butler-dl -type f -name butler | head -n1)"
+          chmod +x "$BUTLER"
+          "$BUTLER" version
+          "$BUTLER" push dist/windows "$ITCH_PROJECT:windows" --userversion "$VERSION"
+          "$BUTLER" push dist/Aria.apk "$ITCH_PROJECT:android" --userversion "$VERSION"
 
       - uses: actions/upload-artifact@v4
         with:
