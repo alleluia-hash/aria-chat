@@ -1,0 +1,28 @@
+Aria - app packages
+===================
+
+Aria.apk
+  Android app. Copy it to a phone and tap it, or send it over WhatsApp/Drive.
+  Android asks once to allow "install unknown apps" for whatever you opened
+  it from - that is normal for any app that is not from the Play Store.
+
+Aria-Windows.zip
+  Windows app. Unzip it anywhere, keep the files together, then double-click
+  Aria.exe. It opens Aria in her own clean window, no address bar, nothing to
+  install. It is 40 KB because it uses the Edge that Windows 10/11 already
+  has, instead of shipping its own browser engine inside.
+
+There is no .ipa in this zip, and it is not possible to make one here.
+Apple only lets an iPhone install an app that is signed with an Apple
+Development certificate, and building one needs a Mac running Xcode plus a
+99 USD/year Apple Developer account. Every "free online ipa maker" either
+needs that same Mac, or produces a file a real iPhone refuses to install.
+
+What works on iPhone instead, in about ten seconds:
+  open https://alleluia-hash.github.io/aria-chat/ in Safari
+  -> Share button -> "Add to Home Screen"
+That gives Aria her own icon on the home screen and opens her fullscreen,
+with no App Store, no account and no expiry.
+
+Aria needs internet: she looks things up live (weather, prices, web search)
+and talks to a free model service. No account, no API key, no tracking.
