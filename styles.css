@@ -275,8 +275,25 @@ body {
   padding: 10px 15px;
   border-radius: 16px 16px 4px 16px;
   background: var(--user-bubble);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.msg.user .body .text {
+  white-space: pre-wrap;
+}
+
+.msg.user .files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.msg.user .files .attachment {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--text);
 }
 
 .msg.assistant .body {
@@ -552,6 +569,97 @@ body {
 
 .field:focus-within {
   border-color: var(--muted);
+}
+
+.composer.dragging .field {
+  border-color: var(--muted);
+  border-style: dashed;
+}
+
+/* ---------- attachments ---------- */
+
+.attach {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  margin-left: -8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.attach:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--user-bubble);
+}
+
+.attach:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 2px 8px;
+}
+
+.attachments[hidden] {
+  display: none;
+}
+
+.attachment {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 100%;
+  padding: 5px 6px 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.attachment .file-name {
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment .file-meta {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.file-remove {
+  align-self: center;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.file-remove:hover {
+  color: var(--text);
+  background: var(--user-bubble);
 }
 
 #input {

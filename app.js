@@ -33,9 +33,18 @@
     "If someone asks who or what you are, or whether they are talking to a website or " +
     "to the app, answer as Aria in one short line -- you are Aria, the assistant built " +
     "into this app -- and then carry on helping. " +
-    "Help people with everyday things: quick questions, planning, writing, " +
-    "explaining ideas, cooking, travel, study and light technical help. " +
-    "Be warm, clear and concise. Prefer short paragraphs and short lists over long essays. " +
+    "Your job is to finish the task, not to talk about it. Work out what the person " +
+    "actually needs, then do it and hand back the finished thing: the email written, " +
+    "the plan complete, the code that runs, the answer that settles the question. " +
+    "When a request is vague but a sensible default exists, pick it, state your " +
+    "assumption in one short line, and carry on; only ask a question when the answer " +
+    "would really change what you produce. " +
+    "For anything with several steps, give short numbered steps and then carry them out; " +
+    "for a single deliverable, just produce it. " +
+    "Never leave placeholders, brackets or 'insert your -- here' marks: write the real content. " +
+    "Use the person's own details from the conversation and from any attached file. " +
+    "Be warm, clear and concise: short paragraphs, tight lists, no padding, and never " +
+    "restate the question back at them. " +
     "Use plain language, and use Markdown for structure and code. " +
     "If you are not sure about something, say so plainly instead of guessing. " +
     "Never invent facts, prices, sources or links. Today's date is " +
@@ -97,6 +106,18 @@
     "one asked for, state that figure first, clearly labelled for what it is, and only " +
     "then say the requested one is not published — do not leave a usable number out.";
 
+  // Files are read in the browser and their text joins the message, so the model
+  // sees a plain block it can work from.
+  const FILES_INSTRUCTIONS =
+    " ATTACHED FILES appear in the conversation as blocks that begin with " +
+    "\"[Attached file: name -- type, size]\", followed by the file's contents or a note " +
+    "saying they could not be read. Treat those contents as the working material for the " +
+    "task: quote exact names, numbers, dates and lines from them instead of paraphrasing " +
+    "loosely, and build the answer on them. If a block says the contents could not be read, " +
+    "for example a scan or a photo, say so in one line and ask for the detail you need -- " +
+    "never guess what a file contained and never claim to have opened something that was " +
+    "not attached.";
+
   const el = {
     chat: document.getElementById("chat"),
     welcome: document.getElementById("welcome"),
@@ -105,10 +126,16 @@
     input: document.getElementById("input"),
     send: document.getElementById("send"),
     newChat: document.getElementById("newChat"),
+    attach: document.getElementById("attach"),
+    fileInput: document.getElementById("fileInput"),
+    attachments: document.getElementById("attachments"),
   };
 
   /** @type {{role: "user"|"assistant", content: string}[]} */
   let history = [];
+  /** @type {{id: string, name: string, size: number, type: string, state: string, label: string, text: string, note: string}[]} */
+  let attachments = [];
+  let attachmentSeq = 0;
   let busy = false;
   let stopRequested = false;
   let aborter = null;
@@ -308,12 +335,26 @@
     });
   }
 
-  function addUserMessage(text) {
+  function addUserMessage(text, files) {
     const node = document.createElement("article");
     node.className = "msg user";
     const body = document.createElement("div");
     body.className = "body";
-    body.textContent = text;
+
+    if (files && files.length) {
+      const list = document.createElement("div");
+      list.className = "files";
+      for (const record of files) list.append(attachmentChip(record, false));
+      body.append(list);
+    }
+
+    if (text) {
+      const line = document.createElement("div");
+      line.className = "text";
+      line.textContent = text;
+      body.append(line);
+    }
+
     node.append(body);
     el.messages.append(node);
     return node;
@@ -349,6 +390,546 @@
     p.className = "notice";
     p.textContent = text;
     body.append(p);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Attachments — any file at all, read here in the browser, never sent
+   * anywhere except as text inside the message the person chose to send
+   * ------------------------------------------------------------------ */
+
+  const MAX_FILES = 10;
+  const MAX_FILE_BYTES = 25 * 1024 * 1024;
+  const MAX_FILE_CHARS = 16000;
+  const MAX_TOTAL_CHARS = 42000;
+
+  const TEXT_EXTENSIONS = new Set(
+    ("txt text md markdown rst log csv tsv json jsonl ndjson yaml yml toml ini cfg conf " +
+      "xml html htm svg css scss less sass js mjs cjs jsx ts tsx py rb php pl pm lua go rs " +
+      "java kt kts swift c h cc cpp cxx hpp cs m mm sh bash zsh fish ps1 bat cmd sql graphql " +
+      "gql vue svelte astro diff patch tex bib org r tf srt vtt ics properties gradle env").split(" ")
+  );
+
+  // The document parts worth reading inside a Word/Excel/PowerPoint/ODF container.
+  const ARCHIVE_PARTS = [
+    /^word\/document\.xml$/i,
+    /^word\/footnotes\.xml$/i,
+    /^xl\/sharedStrings\.xml$/i,
+    /^xl\/worksheets\/sheet\d+\.xml$/i,
+    /^ppt\/slides\/slide\d+\.xml$/i,
+    /^ppt\/notesSlides\/notesSlide\d+\.xml$/i,
+    /^content\.xml$/i,
+  ];
+
+  function humanSize(bytes) {
+    const size = Number(bytes) || 0;
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function extensionOf(name) {
+    const found = /\.([A-Za-z0-9]+)$/.exec(String(name || ""));
+    return found ? found[1].toLowerCase() : "";
+  }
+
+  // "deflate" is zlib-wrapped (PDF), "deflate-raw" is bare (zip containers).
+  async function inflateBytes(bytes, format) {
+    if (typeof DecompressionStream !== "function") return null;
+    try {
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(format));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function looksBinary(bytes) {
+    const sample = bytes.subarray(0, Math.min(bytes.length, 4096));
+    if (!sample.length) return false;
+    if (sample.includes(0)) return true;
+    let odd = 0;
+    for (const byte of sample) if (byte < 9 || (byte > 13 && byte < 32)) odd += 1;
+    return odd / sample.length > 0.05;
+  }
+
+  function decodeText(bytes) {
+    let text = "";
+    try {
+      text = new TextDecoder("utf-8").decode(bytes);
+    } catch (_) {
+      text = new TextDecoder("latin1").decode(bytes);
+    }
+    return text
+      .replace(/\u0000/g, "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[^\S\n]+\n/g, "\n")
+      .replace(/\n{4,}/g, "\n\n\n")
+      .trim();
+  }
+
+  function mediaKind(bytes, type) {
+    const declared = String(type || "");
+    if (/^image\//.test(declared)) return "picture";
+    if (/^audio\//.test(declared)) return "audio file";
+    if (/^video\//.test(declared)) return "video";
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "picture";
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "picture";
+    if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return "picture";
+    if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57) {
+      return "picture";
+    }
+    return "";
+  }
+
+  /* --- PDF: pull the text out of the page streams --------------------- */
+
+  function pdfLiteral(raw) {
+    const body = raw.slice(1, -1);
+    let out = "";
+    for (let i = 0; i < body.length; i += 1) {
+      const ch = body[i];
+      if (ch !== "\\") {
+        out += ch;
+        continue;
+      }
+      const next = body[i + 1];
+      if (next === undefined) break;
+      if (next === "n" || next === "r") {
+        out += "\n";
+        i += 1;
+      } else if (next === "t") {
+        out += "\t";
+        i += 1;
+      } else if (next === "b" || next === "f") {
+        i += 1;
+      } else if (next === "(" || next === ")" || next === "\\") {
+        out += next;
+        i += 1;
+      } else if (/[0-7]/.test(next)) {
+        let oct = next;
+        let k = i + 2;
+        while (k < body.length && oct.length < 3 && /[0-7]/.test(body[k])) {
+          oct += body[k];
+          k += 1;
+        }
+        out += String.fromCharCode(parseInt(oct, 8));
+        i = k - 1;
+      } else {
+        i += 1; // escaped newline or an unknown escape
+      }
+    }
+    return out;
+  }
+
+  function pdfHex(raw) {
+    const hex = raw.replace(/[^0-9A-Fa-f]/g, "");
+    let out = "";
+    for (let i = 0; i + 1 < hex.length; i += 2) {
+      out += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
+    }
+    return out;
+  }
+
+  function pdfStrings(content) {
+    const out = [];
+    let line = "";
+    const tokens = /\[(?:\((?:\\.|[^\\()])*\)|[^\]])*\]\s*TJ|\((?:\\.|[^\\()])*\)|<[0-9A-Fa-f\s]{2,}>|\bT\*|\bTD\b|\bTd\b|\bET\b/g;
+    let match;
+
+    while ((match = tokens.exec(content))) {
+      const token = match[0];
+
+      if (token[0] === "[") {
+        const array = token.replace(/\]\s*TJ$/, "");
+        const items = /\((?:\\[\s\S]|[^\\()])*\)|<[0-9A-Fa-f\s]{2,}>|-?[\d.]+/g;
+        let item;
+        while ((item = items.exec(array))) {
+          const piece = item[0];
+          if (piece[0] === "(") line += pdfLiteral(piece);
+          else if (piece[0] === "<") line += pdfHex(piece);
+          else if (Number(piece) < -60) line += " "; // a wide gap between words
+        }
+        continue;
+      }
+
+      if (token === "T*" || token === "TD" || token === "Td" || token === "ET") {
+        if (line.trim()) {
+          out.push(line.trim());
+          line = "";
+        }
+        continue;
+      }
+
+      if (token[0] === "(") line += pdfLiteral(token);
+      else if (token[0] === "<") line += pdfHex(token);
+    }
+
+    if (line.trim()) out.push(line.trim());
+    return out.join("\n");
+  }
+
+  async function extractPdfText(bytes) {
+    const latin = new TextDecoder("latin1").decode(bytes);
+    const pieces = [];
+    let index = 0;
+    let streams = 0;
+
+    while (streams < 400) {
+      const start = latin.indexOf("stream", index);
+      if (start === -1) break;
+      let dataStart = start + 6;
+      if (latin[dataStart] === "\r") dataStart += 1;
+      if (latin[dataStart] === "\n") dataStart += 1;
+      const end = latin.indexOf("endstream", dataStart);
+      if (end === -1) break;
+      index = end + 9;
+      streams += 1;
+
+      const raw = bytes.subarray(dataStart, end);
+      const inflated = await inflateBytes(raw, "deflate");
+      const content = new TextDecoder("latin1").decode(inflated || raw);
+      if (!/\(|<[0-9A-Fa-f]/.test(content)) continue;
+
+      const text = pdfStrings(content);
+      if (text.trim()) pieces.push(text);
+      if (pieces.join("\n").length > MAX_FILE_CHARS * 2) break;
+    }
+
+    return pieces.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  /* --- Zip containers: Word, Excel, PowerPoint, ODF, plain archives --- */
+
+  function zipEntries(bytes) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let eocd = -1;
+    const floor = Math.max(0, bytes.length - 66000);
+    for (let i = bytes.length - 22; i >= floor; i -= 1) {
+      if (bytes[i] === 0x50 && bytes[i + 1] === 0x4b && bytes[i + 2] === 0x05 && bytes[i + 3] === 0x06) {
+        eocd = i;
+        break;
+      }
+    }
+    if (eocd < 0) return [];
+
+    const count = view.getUint16(eocd + 10, true);
+    const entries = [];
+    let pointer = view.getUint32(eocd + 16, true);
+
+    for (let i = 0; i < count && pointer + 46 <= bytes.length; i += 1) {
+      if (view.getUint32(pointer, true) !== 0x02014b50) break;
+      const nameLength = view.getUint16(pointer + 28, true);
+      entries.push({
+        name: new TextDecoder("utf-8").decode(bytes.subarray(pointer + 46, pointer + 46 + nameLength)),
+        method: view.getUint16(pointer + 10, true),
+        compressedSize: view.getUint32(pointer + 20, true),
+        localOffset: view.getUint32(pointer + 42, true),
+      });
+      pointer += 46 + nameLength + view.getUint16(pointer + 30, true) + view.getUint16(pointer + 32, true);
+    }
+    return entries;
+  }
+
+  async function readZipEntry(bytes, entry) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (view.getUint32(entry.localOffset, true) !== 0x04034b50) return null;
+    const start =
+      entry.localOffset +
+      30 +
+      view.getUint16(entry.localOffset + 26, true) +
+      view.getUint16(entry.localOffset + 28, true);
+    const raw = bytes.subarray(start, start + entry.compressedSize);
+    if (entry.method === 0) return raw;
+    if (entry.method !== 8) return null;
+    return inflateBytes(raw, "deflate-raw");
+  }
+
+  const XML_ENTITIES = {
+    "&lt;": "<",
+    "&gt;": ">",
+    "&quot;": '"',
+    "&apos;": "'",
+    "&nbsp;": " ",
+    "&amp;": "&",
+  };
+
+  function xmlToText(xml) {
+    return String(xml)
+      .replace(/<\/(?:w:p|a:p|text:p|text:h|row|si|c)>/gi, "\n")
+      .replace(/<w:tab\b[^>]*\/?>/gi, "\t")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(Number(code)))
+      .replace(/&(lt|gt|quot|apos|nbsp|amp);/g, (entity) => XML_ENTITIES[entity] || entity)
+      .split("\n")
+      .map((line) => line.replace(/[ \t]{2,}/g, " ").trim())
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  async function extractArchiveText(bytes) {
+    const entries = zipEntries(bytes);
+    if (!entries.length) return null;
+
+    const files = entries.filter((entry) => !entry.name.endsWith("/"));
+    const wanted = files.filter((entry) => ARCHIVE_PARTS.some((re) => re.test(entry.name)));
+
+    if (!wanted.length) {
+      return {
+        text: "",
+        list: files.slice(0, 40).map((entry) => entry.name),
+        count: files.length,
+      };
+    }
+
+    const pieces = [];
+    let total = 0;
+    for (const entry of wanted.slice(0, 12)) {
+      const raw = await readZipEntry(bytes, entry);
+      if (!raw) continue;
+      const piece = xmlToText(new TextDecoder("utf-8").decode(raw));
+      if (!piece) continue;
+      pieces.push(piece);
+      total += piece.length;
+      if (total > MAX_FILE_CHARS) break;
+    }
+
+    const first = wanted[0].name;
+    const label = /^word\//i.test(first)
+      ? "Word document"
+      : /^xl\//i.test(first)
+      ? "spreadsheet"
+      : /^ppt\//i.test(first)
+      ? "slides"
+      : "document";
+
+    return { text: pieces.join("\n\n"), list: [], count: 0, label };
+  }
+
+  /* --- One file in, one record out ------------------------------------ */
+
+  async function readAttachment(file) {
+    const record = {
+      name: file.name || "file",
+      size: file.size || 0,
+      type: file.type || "",
+      state: "reading",
+      label: "reading",
+      text: "",
+      note: "",
+    };
+
+    if (record.size > MAX_FILE_BYTES) {
+      record.state = "too big";
+      record.label = "too big";
+      record.note = `This file is ${humanSize(record.size)}, larger than the ${humanSize(
+        MAX_FILE_BYTES
+      )} this app reads. Ask the person to send the part that matters.`;
+      return record;
+    }
+
+    let bytes = null;
+    try {
+      bytes = new Uint8Array(await file.arrayBuffer());
+    } catch (_) {
+      bytes = null;
+    }
+
+    if (!bytes) {
+      record.state = "unread";
+      record.label = "unreadable";
+      record.note = "This file could not be read from the device.";
+      return record;
+    }
+
+    const head = new TextDecoder("latin1").decode(bytes.subarray(0, 8));
+    const ext = extensionOf(record.name);
+
+    if (head.startsWith("%PDF")) {
+      try {
+        record.text = await extractPdfText(bytes);
+      } catch (_) {
+        record.text = "";
+      }
+      record.state = record.text.trim() ? "text" : "unread";
+      record.label = record.text.trim() ? "PDF" : "PDF · no text layer";
+      if (!record.text.trim()) {
+        record.note =
+          "The text of this PDF could not be extracted -- it may be a scan of a page, or use an " +
+          "unusual font encoding. Ask the person to paste the part that matters.";
+      }
+      return record;
+    }
+
+    if (head.startsWith("PK\u0003\u0004") || head.startsWith("PK\u0005\u0006")) {
+      try {
+        const extracted = await extractArchiveText(bytes);
+        if (extracted && extracted.text.trim()) {
+          record.text = extracted.text;
+          record.state = "text";
+          record.label = extracted.label;
+          return record;
+        }
+        if (extracted && extracted.list && extracted.list.length) {
+          record.state = "list";
+          record.label = "archive";
+          record.note =
+            `This is a zip archive holding ${extracted.count} file(s): ` +
+            extracted.list.join(", ") +
+            (extracted.count > extracted.list.length ? ", ..." : "") +
+            ". The files inside were not opened -- ask which one matters, or for that one directly.";
+          return record;
+        }
+      } catch (_) {
+        /* fall through and try it as text */
+      }
+    }
+
+    const media = mediaKind(bytes, record.type);
+    if (media) {
+      record.state = "media";
+      record.label = media;
+      record.note =
+        `This is a ${media} file. The free text lane cannot see pictures or watch video, so ` +
+        `describe what is in it, or paste the text that needs working on.`;
+      return record;
+    }
+
+    const textish =
+      /^text\//i.test(record.type) ||
+      TEXT_EXTENSIONS.has(ext) ||
+      /json|xml|javascript|csv|yaml|markdown/i.test(record.type || "");
+
+    if (textish || !looksBinary(bytes)) {
+      record.text = decodeText(bytes);
+      if (!record.text) {
+        record.state = "unread";
+        record.label = "empty";
+        record.note = "This file is empty.";
+        return record;
+      }
+      record.state = "text";
+      record.label = ext ? ext.toUpperCase().slice(0, 7) : "text";
+      return record;
+    }
+
+    record.state = "unread";
+    record.label = "binary";
+    record.note =
+      "This is a binary file, so only its name, type and size are known -- its contents cannot " +
+      "be read as text. Ask the person to describe it or send an exported version.";
+    return record;
+  }
+
+  function attachmentBlock(record) {
+    const head = `[Attached file: ${record.name} -- ${record.type || "unknown type"}, ${humanSize(
+      record.size
+    )}]`;
+    let body = record.text && record.text.trim() ? record.text.trim() : record.note || "The contents of this file could not be read.";
+    if (body.length > MAX_FILE_CHARS) {
+      body = `${body.slice(0, MAX_FILE_CHARS)}\n[... first part only: this file is longer than the app sends]`;
+    }
+    return `${head}\n${body}`;
+  }
+
+  function composeMessage(text, files) {
+    const parts = [];
+    let budget = MAX_TOTAL_CHARS;
+    for (const record of files) {
+      let block = attachmentBlock(record);
+      if (block.length > budget) {
+        block = `${block.slice(0, Math.max(0, budget))}\n[... truncated: the rest of this file is too long to send]`;
+      }
+      budget -= block.length;
+      parts.push(block);
+      if (budget <= 0) break;
+    }
+    return [text, ...parts].filter(Boolean).join("\n\n");
+  }
+
+  function defaultPrompt(files) {
+    const one = files.length === 1;
+    return one
+      ? "Take a look at the file I attached and tell me what I can do with it."
+      : "Take a look at the files I attached and tell me what I can do with them.";
+  }
+
+  function attachmentChip(record, removable) {
+    const chip = document.createElement("span");
+    chip.className = "attachment";
+    chip.title = record.name;
+
+    const name = document.createElement("span");
+    name.className = "file-name";
+    name.textContent = record.name;
+    chip.append(name);
+
+    const meta = document.createElement("span");
+    meta.className = "file-meta";
+    const size = record.size ? humanSize(record.size) : "";
+    meta.textContent =
+      record.state === "reading"
+        ? "reading..."
+        : [record.label || record.state, size].filter(Boolean).join(" · ");
+    chip.append(meta);
+
+    if (removable) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "file-remove";
+      remove.dataset.id = record.id;
+      remove.setAttribute("aria-label", `Remove ${record.name}`);
+      remove.textContent = "×";
+      chip.append(remove);
+    }
+
+    return chip;
+  }
+
+  function renderAttachments() {
+    el.attachments.innerHTML = "";
+    if (!attachments.length) {
+      el.attachments.hidden = true;
+      return;
+    }
+    el.attachments.hidden = false;
+    for (const record of attachments) el.attachments.append(attachmentChip(record, true));
+  }
+
+  async function addFiles(list) {
+    const incoming = Array.from(list || []).filter(Boolean);
+    if (!incoming.length || busy) return;
+    const room = MAX_FILES - attachments.length;
+    if (room <= 0) return;
+
+    const records = incoming.slice(0, room).map((file) => ({
+      id: `f${(attachmentSeq += 1)}`,
+      name: file.name || "file",
+      size: file.size || 0,
+      type: file.type || "",
+      state: "reading",
+      label: "reading",
+      text: "",
+      note: "",
+      file,
+    }));
+
+    attachments.push(...records);
+    renderAttachments();
+    updateComposer();
+
+    for (const record of records) {
+      try {
+        Object.assign(record, await readAttachment(record.file));
+      } catch (_) {
+        record.state = "unread";
+        record.label = "unreadable";
+        record.note = "This file could not be read.";
+      }
+      record.file = null;
+      renderAttachments();
+      updateComposer();
+    }
   }
 
   /* ------------------------------------------------------------------ *
@@ -867,9 +1448,13 @@
    * ------------------------------------------------------------------ */
 
   function buildMessages(live) {
+    const hasFiles = history.some(
+      (message) => message.role === "user" && message.content.includes("[Attached file:")
+    );
     const system =
       SYSTEM_PROMPT +
       (live && live.block ? LIVE_INSTRUCTIONS : "") +
+      (hasFiles ? FILES_INSTRUCTIONS : "") +
       (asksAboutItself(currentQuestion()) ? SELF_NOTE : "");
     const messages = [{ role: "system", content: system }, ...history];
     if (live && live.block) messages.push({ role: "system", content: live.block });
@@ -1134,16 +1719,24 @@
   }
 
   async function send(text) {
+    if (busy) return;
     const trimmed = text.trim();
-    if (!trimmed || busy) return;
+    if (attachments.some((record) => record.state === "reading")) return;
+    const files = attachments.slice();
+    if (!trimmed && !files.length) return;
+
+    const prompt = trimmed || defaultPrompt(files);
 
     el.welcome.hidden = true;
     el.input.value = "";
     autoGrow();
+
+    attachments = [];
+    renderAttachments();
     updateComposer();
 
-    history.push({ role: "user", content: trimmed });
-    addUserMessage(trimmed);
+    history.push({ role: "user", content: composeMessage(prompt, files) });
+    addUserMessage(prompt, files);
     const { body } = addAssistantMessage();
     scrollToBottom();
 
@@ -1178,7 +1771,9 @@
     el.welcome.hidden = true;
     for (const message of history) {
       if (message.role === "user") {
-        addUserMessage(message.content);
+        // The saved copy carries the file text; the bubble shows the words that were typed.
+        const split = message.content.indexOf("\n\n[Attached file:");
+        addUserMessage(split === -1 ? message.content : message.content.slice(0, split));
       } else {
         const { body } = addAssistantMessage();
         paint(body, message.content);
@@ -1197,9 +1792,12 @@
   }
 
   function updateComposer() {
-    el.send.disabled = busy ? false : !el.input.value.trim();
+    const reading = attachments.some((record) => record.state === "reading");
+    const ready = Boolean(el.input.value.trim()) || attachments.length > 0;
+    el.send.disabled = busy ? false : !ready || reading;
     el.send.classList.toggle("busy", busy);
     el.send.setAttribute("aria-label", busy ? "Stop generating" : "Send message");
+    el.attach.disabled = busy || reading;
   }
 
   el.form.addEventListener("submit", (event) => {
@@ -1227,6 +1825,8 @@
   el.newChat.addEventListener("click", () => {
     if (busy) return;
     history = [];
+    attachments = [];
+    renderAttachments();
     save();
     el.messages.innerHTML = "";
     el.welcome.hidden = false;
@@ -1256,6 +1856,45 @@
     } catch (_) {
       button.textContent = "select + copy";
     }
+  });
+
+  el.attach.addEventListener("click", () => el.fileInput.click());
+
+  el.fileInput.addEventListener("change", () => {
+    addFiles(el.fileInput.files);
+    el.fileInput.value = "";
+  });
+
+  el.attachments.addEventListener("click", (event) => {
+    const remove = event.target.closest(".file-remove");
+    if (!remove) return;
+    attachments = attachments.filter((record) => record.id !== remove.dataset.id);
+    renderAttachments();
+    updateComposer();
+  });
+
+  // Dropping or pasting a file works too: same reader, same limits.
+  el.form.addEventListener("dragover", (event) => {
+    if (!event.dataTransfer) return;
+    event.preventDefault();
+    el.form.classList.add("dragging");
+  });
+
+  el.form.addEventListener("dragleave", (event) => {
+    if (el.form.contains(event.relatedTarget)) return;
+    el.form.classList.remove("dragging");
+  });
+
+  el.form.addEventListener("drop", (event) => {
+    if (!event.dataTransfer || !event.dataTransfer.files.length) return;
+    event.preventDefault();
+    el.form.classList.remove("dragging");
+    addFiles(event.dataTransfer.files);
+  });
+
+  el.input.addEventListener("paste", (event) => {
+    const files = event.clipboardData && event.clipboardData.files;
+    if (files && files.length) addFiles(files);
   });
 
   restore();

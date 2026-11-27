@@ -55,7 +55,7 @@ jobs:
           cp package/windows/READ-ME.txt dist/windows/
           cp package/WHAT-IS-IN-HERE.txt dist/
           cp package/out/Aria.apk dist/
-          ( cd dist/windows && zip -q -9 -X ../Aria-Windows.zip Aria.exe index.html app.js styles.css README.txt )
+          ( cd dist/windows && zip -q -9 -X ../Aria-Windows.zip Aria.exe index.html app.js styles.css READ-ME.txt )
           mkdir -p bundle && cp dist/Aria.apk dist/Aria-Windows.zip package/WHAT-IS-IN-HERE.txt bundle/
           ( cd bundle && zip -q -9 -X ../dist/Aria-app-packages.zip Aria.apk Aria-Windows.zip WHAT-IS-IN-HERE.txt )
           ls -lh dist
