@@ -121,9 +121,24 @@ The paperclip attaches anything at all — there is no list of allowed types. Dr
 | PDF | The text layer, pulled out of the page streams |
 | Word, Excel, PowerPoint, OpenDocument | The text from the document parts inside the container |
 | Zip and other archives | The list of files inside, so she can ask which one matters |
-| Photos, audio, video | The name, type and size — the free text lane cannot see them, so describe them instead |
+| Photos | Measured in this browser, pixel by pixel: shape, size, main colours, how much of the frame is detail, and whether it looks like text or a photo. With a free Puter account she also sees the picture itself |
+| Audio, video | The name, type and size — describe them instead |
 
 Up to 10 files, 25 MB each, and a very long file is clipped rather than failing. When a PDF is a scan with no text layer, or a file cannot be read at all, Aria says so instead of inventing what was in it.
+
+## Files out
+
+Ask for a document and she hands you the file itself, written in your browser — not a description of what the file could contain.
+
+| You ask for | You get |
+| --- | --- |
+| A report, a letter, a plan, meeting notes | A Word document (`.docx`) with headings and lists |
+| A budget, a tracker, a price list | An Excel workbook (`.xlsx`) with real formulas, so the totals recalculate when you edit a cell |
+| A deck, a pitch, a lesson | A PowerPoint file (`.pptx`), split across slides rather than one endless one |
+| Something to print or send | A PDF |
+| Text you want to keep | Markdown or CSV |
+
+Every answer also has **Save as** underneath it, which turns the answer you are reading into any of those files. A preview opens in the page first, so you can check the numbers and the wording before you download.
 
 ## Privacy
 
@@ -138,7 +153,7 @@ Up to 10 files, 25 MB each, and a very long file is clipped rather than failing.
 ```
 index.html   the page
 styles.css   the look: one column, light and dark, mobile-first
-app.js       chat logic, Markdown rendering, storage, providers, live lookups, file reading
+app.js       chat logic, Markdown rendering, storage, providers, live lookups, file reading, the Word/Excel/PowerPoint/PDF writers and the picture reader
 ```
 
 No frameworks, no bundler, no dependencies to audit. The only external script is the optional Puter sign-in library.
@@ -150,7 +165,7 @@ The default lane uses the keyless `openai-fast` endpoint. If you'd rather use yo
 ## Limits, honestly
 
 - It is not GPT-5-class at long reasoning or maths. She reads the search results and the public sources listed above, so she can answer with real, current figures, but she reads snippets rather than full articles, and she cannot get past a paywall or a site that blocks readers.
-- Attachments are read as text. Pictures, audio, video and scanned pages arrive as a name, a type and a size — she will say so rather than guess what was in them.
+- Pictures are measured, not read. She can tell you the shape, the colours, how busy the frame is and where the text sits, and she can say when something looks like a scan of a document — but she cannot read the words inside a picture, and she will not pretend to. Audio and video still arrive as a name, a type and a size.
 - Search runs through a free public reader, which allows a handful of searches a minute; when it is busy she falls back to Wikipedia and says what she used.
 - Compressed conversations can lose detail; start a new chat for a new topic.
 - Free public endpoints can be slow or briefly unavailable. The app tells you instead of pretending.

@@ -730,6 +730,185 @@ body {
   opacity: 0.85;
 }
 
+/* ---------- files out ---------- */
+
+.file-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.file-badge {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  background: var(--user-bubble);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.file-badge[data-kind="docx"] {
+  color: #2b579a;
+}
+
+.file-badge[data-kind="xlsx"] {
+  color: #217346;
+}
+
+.file-badge[data-kind="pptx"] {
+  color: #c43e1c;
+}
+
+.file-badge[data-kind="pdf"] {
+  color: #b3261e;
+}
+
+.file-card-info {
+  display: flex;
+  flex: 1 1 150px;
+  min-width: 0;
+  flex-direction: column;
+  line-height: 1.35;
+}
+
+.file-card-info strong {
+  font-size: 14.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.file-card-info span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.file-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.file-card-actions button,
+.save-as-row button {
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.file-card-actions button:hover,
+.save-as-row button:hover {
+  background: var(--user-bubble);
+}
+
+.file-card-actions button[data-download] {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.file-card-actions button[data-download]:hover {
+  background: var(--accent);
+  opacity: 0.86;
+}
+
+.file-preview {
+  flex: 1 1 100%;
+  margin-top: 2px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.file-preview[hidden] {
+  display: none;
+}
+
+.file-preview h4 {
+  margin: 8px 0 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.file-preview .slide-preview {
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.file-preview .slide-preview strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+
+.file-preview ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.file-preview pre.file-text {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.save-as {
+  margin-top: 14px;
+}
+
+.save-as summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.save-as summary::-webkit-details-marker {
+  display: none;
+}
+
+.save-as summary::before {
+  content: "⤓";
+  font-size: 14px;
+}
+
+.save-as summary:hover {
+  color: var(--text);
+}
+
+.save-as-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 @media (max-width: 560px) {
   .app {
     padding: 0 14px;

@@ -118,6 +118,39 @@
     "never guess what a file contained and never claim to have opened something that was " +
     "not attached.";
 
+  // Pictures: the browser measures the pixels here; a free account adds real eyes.
+  const PICTURE_INSTRUCTIONS =
+    " A PICTURE block begins \"[Picture: name -- measured in this browser]\" and holds " +
+    "measurements taken from the image itself: size and shape, what kind of picture it looks " +
+    "like, background, main colours, light and contrast, where the busy and empty parts sit, " +
+    "and how many rows of small marks it has. Reason from those measurements: say what kind " +
+    "of picture it is, how it is laid out, and what the person most likely needs from it. You " +
+    "cannot decode the words inside a picture from measurements, so never invent a caption, " +
+    "number, name or line of text that was not measured. When the exact text matters, say " +
+    "plainly that the words inside a picture cannot be read here, ask for them, and mention " +
+    "that a free account adds a model that can read the picture itself. Never say you cannot " +
+    "see the picture: you have its measurements.";
+
+  // Files out: the model describes the file, the browser builds the real thing.
+  const FILE_INSTRUCTIONS =
+    " DELIVERING A FILE. When the person asks for something they can open and keep -- a " +
+    "document, report, letter, resume, spreadsheet, budget, table, slide deck, PDF -- do the " +
+    "work, then emit it as one fenced block that starts with ```aria-file and holds ONE JSON " +
+    "object, then close the fence. Nothing else goes inside that fence. Shape: " +
+    '{"kind":"docx","name":"q3-budget","title":"Q3 budget","blocks":' +
+    '[{"t":"h1","text":"Q3 budget"},{"t":"p","text":"..."},' +
+    '{"t":"bullet","text":"..."},{"t":"table","head":["Item","Cost"],' +
+    '"rows":[["Rent","1200"]]}]}. ' +
+    "kind is docx, xlsx, pptx, pdf, csv, md, txt or html; name is short, with no extension. " +
+    "Blocks for docx, pdf and html: t is h1, h2, h3, p, bullet, num, quote, code, table or " +
+    "pagebreak. For xlsx use " +
+    '{"t":"sheet","name":"Budget","rows":[["Item","Cost"],["Rent",1200]]} -- one block per ' +
+    "sheet, numbers as numbers. For pptx use " +
+    '{"t":"slide","title":"...","bullets":["..."]} -- one block per slide. The JSON must be ' +
+    "strictly valid: double quotes, no comments, no trailing commas, no unescaped line breaks, " +
+    "no markdown inside strings. Write the whole file, never a placeholder. Say one short line " +
+    "before the fence and nothing after it. If they did not ask for a file, do not emit one.";
+
   const el = {
     chat: document.getElementById("chat"),
     welcome: document.getElementById("welcome"),
@@ -139,6 +172,8 @@
   let busy = false;
   let stopRequested = false;
   let aborter = null;
+  /** @type {File[]} the pictures of the turn being asked, for a lane that can see them */
+  let pendingImages = [];
 
   /* ------------------------------------------------------------------ *
    * Markdown — small and safe: everything is escaped before formatting
@@ -174,7 +209,15 @@
     const fenced = source.replace(
       /```([\w+-]*)[ \t]*\n?([\s\S]*?)(?:```|$)/g,
       (_m, lang, code) => {
-        blocks.push({ lang: lang || "code", code: code.replace(/\n$/, "") });
+        const body = code.replace(/\n$/, "");
+        // A file the app builds itself becomes a card, never raw JSON on screen.
+        if (/^aria-file/i.test(lang)) return "";
+        if (/"kind"\s*:/.test(body)) {
+          const spec = readSpec(body);
+          const named = spec ? String(spec.kind || "").toLowerCase().replace(/[^a-z]/g, "") : "";
+          if (spec && FILE_KINDS[named]) return "";
+        }
+        blocks.push({ lang: lang || "code", code: body });
         return `\u0000BLOCK${blocks.length - 1}\u0000`;
       }
     );
@@ -381,8 +424,11 @@
     return { node, body };
   }
 
-  function paint(body, text) {
-    body.innerHTML = renderMarkdown(fixIdentity(text));
+  function paint(body, text, streaming = false) {
+    const clean = fixIdentity(text);
+    if (!streaming) body.dataset.text = clean;
+    body.innerHTML = renderMarkdown(clean);
+    mountFiles(body, clean, streaming);
   }
 
   function notice(body, text) {
@@ -786,12 +832,23 @@
     }
 
     const media = mediaKind(bytes, record.type);
+    if (media === "picture") {
+      const pictured = await readPicture(file);
+      record.state = "picture";
+      record.label = "picture · read here";
+      record.picture = pictured;
+      record.note = pictured
+        ? ""
+        : "This picture could not be decoded in the browser, so only its name, type and size are known.";
+      return record;
+    }
+
     if (media) {
       record.state = "media";
       record.label = media;
       record.note =
-        `This is a ${media} file. The free text lane cannot see pictures or watch video, so ` +
-        `describe what is in it, or paste the text that needs working on.`;
+        `This is a ${media} file. Aria cannot watch or listen to it here, so describe what is ` +
+        `in it, or paste the words that need working on.`;
       return record;
     }
 
@@ -825,6 +882,9 @@
     const head = `[Attached file: ${record.name} -- ${record.type || "unknown type"}, ${humanSize(
       record.size
     )}]`;
+    if (record.picture) {
+      return `${head}\n[Picture: ${record.name} -- measured in this browser]\n${record.picture}`;
+    }
     let body = record.text && record.text.trim() ? record.text.trim() : record.note || "The contents of this file could not be read.";
     if (body.length > MAX_FILE_CHARS) {
       body = `${body.slice(0, MAX_FILE_CHARS)}\n[... first part only: this file is longer than the app sends]`;
@@ -926,7 +986,7 @@
         record.label = "unreadable";
         record.note = "This file could not be read.";
       }
-      record.file = null;
+      if (record.state !== "picture") record.file = null;
       renderAttachments();
       updateComposer();
     }
@@ -1451,11 +1511,21 @@
     const hasFiles = history.some(
       (message) => message.role === "user" && message.content.includes("[Attached file:")
     );
+    const question = currentQuestion();
+    const hasPicture = history.some(
+      (message) => message.role === "user" && message.content.includes("[Picture:")
+    );
+    const wantsFile =
+      /\b(?:document|report|letter|resume|cv|docx|word|spreadsheet|excel|xlsx|budget|invoice|tracker|slide|slides|deck|presentation|pptx|pdf|csv|checklist|template|cheat ?sheet|download)\b/i.test(
+        question
+      ) || /aria-file/.test(history.map((message) => message.content).join("\n"));
     const system =
       SYSTEM_PROMPT +
       (live && live.block ? LIVE_INSTRUCTIONS : "") +
       (hasFiles ? FILES_INSTRUCTIONS : "") +
-      (asksAboutItself(currentQuestion()) ? SELF_NOTE : "");
+      (hasPicture ? PICTURE_INSTRUCTIONS : "") +
+      (wantsFile ? FILE_INSTRUCTIONS : "") +
+      (asksAboutItself(question) ? SELF_NOTE : "");
     const messages = [{ role: "system", content: system }, ...history];
     if (live && live.block) messages.push({ role: "system", content: live.block });
     return messages;
@@ -1531,9 +1601,26 @@
     return { text };
   }
 
-  /** Optional free account: streams tokens as they arrive. */
+  /** Optional free account: streams tokens, and is the only lane that truly sees an image. */
   async function askPuter(body, live) {
-    const response = await window.puter.ai.chat(buildMessages(live), { stream: true });
+    const messages = buildMessages(live);
+    let withEyes = false;
+    if (pendingImages.length) {
+      try {
+        const urls = (await Promise.all(pendingImages.slice(0, 3).map(pictureDataUrl))).filter(Boolean);
+        if (urls.length) withEyes = attachPictures(messages, urls);
+      } catch (_) {
+        withEyes = false; // the measurements are still in the text
+      }
+    }
+
+    let response;
+    try {
+      response = await window.puter.ai.chat(messages, { stream: true });
+    } catch (error) {
+      if (!withEyes) throw error;
+      response = await window.puter.ai.chat(buildMessages(live), { stream: true });
+    }
     let full = "";
 
     if (response && typeof response[Symbol.asyncIterator] === "function") {
@@ -1544,7 +1631,7 @@
             typeof part === "string" ? part : part?.type === "text" || !part?.type ? part?.text : "";
           if (!piece) continue;
           full += piece;
-          paint(body, full);
+          paint(body, full, true);
           scrollToBottom(false);
         }
       } catch (error) {
@@ -1629,6 +1716,1590 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Pictures — measured here, pixel by pixel, with no model involved
+   * ------------------------------------------------------------------ */
+
+  async function pictureSource(file) {
+    if (typeof createImageBitmap === "function") {
+      try {
+        return await createImageBitmap(file);
+      } catch (_) {
+        /* fall through to an <img> */
+      }
+    }
+    return await new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const image = new Image();
+      image.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(image);
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(null);
+      };
+      image.src = url;
+    });
+  }
+
+  const COLOUR_NAMES = [
+    [255, 255, 255, "white"],
+    [244, 244, 242, "off-white"],
+    [200, 200, 198, "light grey"],
+    [128, 128, 126, "grey"],
+    [70, 70, 70, "dark grey"],
+    [15, 15, 15, "black"],
+    [200, 40, 40, "red"],
+    [230, 110, 30, "orange"],
+    [230, 190, 40, "yellow"],
+    [40, 160, 80, "green"],
+    [30, 150, 140, "teal"],
+    [40, 100, 220, "blue"],
+    [120, 70, 210, "purple"],
+    [220, 80, 150, "pink"],
+    [140, 90, 50, "brown"],
+  ];
+
+  function colourName(r, g, b) {
+    let best = COLOUR_NAMES[0];
+    let bestGap = Infinity;
+    for (const entry of COLOUR_NAMES) {
+      const gap = (entry[0] - r) ** 2 + (entry[1] - g) ** 2 + (entry[2] - b) ** 2;
+      if (gap < bestGap) {
+        bestGap = gap;
+        best = entry;
+      }
+    }
+    return best[3];
+  }
+
+  /** Everything measurable about a picture, said in plain words. */
+  function describePixels(pixels, width, height, realWidth, realHeight) {
+    const count = width * height;
+    const luma = new Float32Array(count);
+    const rowSum = new Float64Array(height);
+    const buckets = new Map();
+    let sum = 0;
+    let sumSq = 0;
+    let saturation = 0;
+    let transparent = 0;
+    let pale = 0;
+    let hueMask = 0;
+
+    for (let y = 0; y < height; y += 1) {
+      let rowTotal = 0;
+      for (let x = 0; x < width; x += 1) {
+        const i = (y * width + x) * 4;
+        const r = pixels[i];
+        const g = pixels[i + 1];
+        const b = pixels[i + 2];
+        const a = pixels[i + 3];
+        if (a < 200) transparent += 1;
+        const value = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        luma[y * width + x] = value;
+        rowTotal += value;
+        sum += value;
+        sumSq += value * value;
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const sat = max === 0 ? 0 : (max - min) / max;
+        saturation += sat;
+        if (value > 238) pale += 1;
+        if (max > 45 && sat > 0.22) {
+          const spread = max - min;
+          const hue =
+            max === r
+              ? 60 * ((g - b) / spread)
+              : max === g
+              ? 60 * (2 + (b - r) / spread)
+              : 60 * (4 + (r - g) / spread);
+          const slot = ((Math.round(hue / 30) % 12) + 12) % 12;
+          hueMask |= 1 << slot;
+        }
+        const key = ((r >> 5) << 6) | ((g >> 5) << 3) | (b >> 5);
+        const bucket = buckets.get(key);
+        if (bucket) {
+          bucket.n += 1;
+          bucket.r += r;
+          bucket.g += g;
+          bucket.b += b;
+        } else {
+          buckets.set(key, { n: 1, r, g, b });
+        }
+      }
+      rowSum[y] = rowTotal;
+    }
+
+    const mean = sum / count;
+    const deviation = Math.sqrt(Math.max(0, sumSq / count - mean * mean));
+    const satMean = saturation / count;
+
+    const palette = [...buckets.values()]
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 5)
+      .map((bucket) => {
+        const r = Math.round(bucket.r / bucket.n);
+        const g = Math.round(bucket.g / bucket.n);
+        const b = Math.round(bucket.b / bucket.n);
+        return {
+          share: Math.round((bucket.n / count) * 100),
+          name: colourName(r, g, b),
+          hex: `#${[r, g, b].map((value) => value.toString(16).padStart(2, "0")).join("")}`,
+          luma: 0.2126 * r + 0.7152 * g + 0.0722 * b,
+        };
+      })
+      .filter((entry, index) => index === 0 || entry.share >= 1);
+
+    // Rows of small marks against the background colour: what lines of text look
+    // like. A photograph has marks on every row and scores too high, so it gets none.
+    const backgroundLuma = palette.length ? palette[0].luma : mean;
+    // Text bands only mean something when one colour really is the page behind them.
+    const hasBackground = Boolean(palette.length && palette[0].share >= 25);
+    const ink = new Float32Array(height);
+    for (let y = 0; y < height; y += 1) {
+      let marks = 0;
+      for (let x = 0; x < width; x += 1) {
+        if (Math.abs(luma[y * width + x] - backgroundLuma) > 42) marks += 1;
+      }
+      ink[y] = marks / width;
+    }
+    let bands = 0;
+    let bandRows = 0;
+    let inBand = false;
+    for (let y = 0; y < height; y += 1) {
+      const on = ink[y] >= 0.006 && ink[y] <= 0.75;
+      if (on) bandRows += 1;
+      else if (inBand) bands += 1;
+      inBand = on;
+    }
+    if (inBand) bands += 1;
+    if (!hasBackground) bands = 0;
+    const markShare = hasBackground ? bandRows / height : 0;
+    const markCoverage = ink.reduce((total, value) => total + value, 0) / height;
+    const inkThirds = [0, 1, 2].map((index) => {
+      const from = Math.floor((index * height) / 3);
+      const to = index === 2 ? height : Math.floor(((index + 1) * height) / 3);
+      let total = 0;
+      for (let y = from; y < to; y += 1) total += ink[y];
+      return to > from ? total / (to - from) : 0;
+    });
+    const busiest = ["top", "middle", "bottom"][inkThirds.indexOf(Math.max(...inkThirds))];
+
+    // Detail: neighbouring pixels that jump in brightness.
+    let edges = 0;
+    let edgeChecks = 0;
+    const stepX = Math.max(1, Math.floor(width / 220));
+    const stepY = Math.max(1, Math.floor(height / 220));
+    for (let y = stepY; y < height; y += stepY) {
+      for (let x = stepX; x < width; x += stepX) {
+        const here = luma[y * width + x];
+        const left = luma[y * width + (x - stepX)];
+        const up = luma[(y - stepY) * width + x];
+        if (Math.abs(here - left) + Math.abs(here - up) > 60) edges += 1;
+        edgeChecks += 1;
+      }
+    }
+    const detail = edgeChecks ? edges / edgeChecks : 0;
+
+    const background = palette[0];
+    let hues = 0;
+    for (let slot = 0; slot < 12; slot += 1) if (hueMask & (1 << slot)) hues += 1;
+
+    const ratio = realWidth / realHeight;
+    const shape = ratio > 1.15 ? "wide" : ratio < 0.87 ? "tall" : "roughly square";
+
+    // What kind of picture this most likely is — always a guess, never a fact.
+    let kind;
+    if (transparent / count > 0.04) kind = "a logo or icon on a transparent background";
+    else if (pale / count > 0.42 && satMean < 0.2 && bands >= 3)
+      kind = "a page of text — a scan, a document, or a screenshot of one";
+    else if (satMean < 0.24 && bands >= 2 && markShare > 0.12) kind = "a screenshot of an interface";
+    else if (hues >= 6 && detail > 0.05) kind = "a photograph or a detailed picture";
+    else if (hues >= 6) kind = "a smooth, colourful picture — a photo, a render or a gradient";
+    else if (hues >= 3) kind = "a chart, diagram, map or illustration";
+    else if (bands >= 2) kind = "a picture with rows of text-like marks";
+    else kind = "a picture";
+
+    const slice = Math.max(1, Math.floor(height / 3));
+    const thirds = [0, 1, 2]
+      .map((index) => {
+        const from = index * slice;
+        const to = index === 2 ? height : from + slice;
+        let bandSum = 0;
+        let bandEdges = 0;
+        let bandPixels = 0;
+        for (let y = from; y < to; y += 1) {
+          bandSum += rowSum[y];
+          for (let x = 0; x < width; x += 1) {
+            const here = luma[y * width + x];
+            const left = x ? luma[y * width + x - 1] : here;
+            if (Math.abs(here - left) > 45) bandEdges += 1;
+            bandPixels += 1;
+          }
+        }
+        const value = bandPixels ? bandSum / bandPixels : mean;
+        const density = bandPixels ? bandEdges / bandPixels : 0;
+        const light = value > 175 ? "light" : value > 95 ? "mid-toned" : "dark";
+        return `${["top", "middle", "bottom"][index]} ${light}${density > 0.06 ? " and busy" : " and calm"}`;
+      })
+      .join(", ");
+
+    const lightWord = mean > 190 ? "bright" : mean > 120 ? "medium" : mean > 60 ? "dim" : "dark";
+    const contrastWord = deviation > 75 ? "strong" : deviation > 38 ? "moderate" : "flat";
+    const colourWord = satMean < 0.1 ? "almost colourless" : satMean < 0.3 ? "muted" : "vivid";
+
+    const lines = [
+      `${realWidth}×${realHeight} pixels (${shape}), ${((realWidth * realHeight) / 1e6).toFixed(1)} megapixels.`,
+      `Looks like ${kind}.`,
+      `Background ${background ? `${background.share}% ${background.name}` : "mixed"}; main colours: ${palette
+        .map((entry) => `${entry.hex} ${entry.name} ${entry.share}%`)
+        .join(", ")}.`,
+      `Light: ${lightWord}, contrast ${contrastWord}, colour ${colourWord}.`,
+      `Layout by thirds: ${thirds}.`,
+      bands
+        ? `About ${bands} band${bands === 1 ? "" : "s"} of small marks across ${Math.round(
+            markShare * 100
+          )}% of the height — the shape text or rows of icons make.`
+        : "No rows of text-like marks were found.",
+      `Everything that is not background covers about ${Math.round(
+        markCoverage * 100
+      )}% of the picture, mostly in the ${busiest} third.`,
+      `Detail: ${detail > 0.13 ? "a lot" : detail > 0.05 ? "some" : "very little"} (${Math.round(
+        detail * 100
+      )}% of sampled pixels are edges).`,
+    ];
+    if (transparent) lines.push(`${Math.round((transparent / count) * 100)}% of it is transparent.`);
+    return lines.join(" ");
+  }
+
+  async function readPicture(file) {
+    const source = await pictureSource(file);
+    if (!source) return "";
+    const realWidth = source.width || source.naturalWidth || 0;
+    const realHeight = source.height || source.naturalHeight || 0;
+    if (!realWidth || !realHeight) return "";
+    const scale = Math.min(1, 1400 / Math.max(realWidth, realHeight));
+    const width = Math.max(1, Math.round(realWidth * scale));
+    const height = Math.max(1, Math.round(realHeight * scale));
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) return "";
+      context.drawImage(source, 0, 0, width, height);
+      if (typeof source.close === "function") source.close();
+      const data = context.getImageData(0, 0, width, height).data;
+      return describePixels(data, width, height, realWidth, realHeight);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  /** A small JPEG for the only lane that can truly see: the free account. */
+  async function pictureDataUrl(file) {
+    const source = await pictureSource(file);
+    if (!source) return "";
+    const realWidth = source.width || source.naturalWidth || 0;
+    const realHeight = source.height || source.naturalHeight || 0;
+    if (!realWidth || !realHeight) return "";
+    const scale = Math.min(1, 1200 / Math.max(realWidth, realHeight));
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(realWidth * scale));
+      canvas.height = Math.max(1, Math.round(realHeight * scale));
+      const context = canvas.getContext("2d");
+      if (!context) return "";
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(source, 0, 0, canvas.width, canvas.height);
+      if (typeof source.close === "function") source.close();
+      return canvas.toDataURL("image/jpeg", 0.82);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function attachPictures(messages, urls) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role !== "user") continue;
+      messages[index] = {
+        role: "user",
+        content: [
+          { type: "text", text: String(messages[index].content) },
+          ...urls.map((url) => ({ type: "image_url", image_url: { url } })),
+        ],
+      };
+      return true;
+    }
+    return false;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Files out — the real document, spreadsheet, deck or PDF, built here
+   * ------------------------------------------------------------------ */
+
+  const FILE_KINDS = {
+    docx: {
+      label: "Word document",
+      ext: "docx",
+      mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    },
+    xlsx: {
+      label: "Excel spreadsheet",
+      ext: "xlsx",
+      mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    },
+    pptx: {
+      label: "PowerPoint deck",
+      ext: "pptx",
+      mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    },
+    pdf: { label: "PDF", ext: "pdf", mime: "application/pdf" },
+    csv: { label: "CSV table", ext: "csv", mime: "text/csv;charset=utf-8" },
+    md: { label: "Markdown", ext: "md", mime: "text/markdown;charset=utf-8" },
+    html: { label: "web page", ext: "html", mime: "text/html;charset=utf-8" },
+    txt: { label: "text file", ext: "txt", mime: "text/plain;charset=utf-8" },
+  };
+
+  const FILE_BADGES = {
+    docx: "DOC",
+    xlsx: "XLS",
+    pptx: "PPT",
+    pdf: "PDF",
+    csv: "CSV",
+    md: "MD",
+    html: "WEB",
+    txt: "TXT",
+  };
+
+  const CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n += 1) {
+      let value = n;
+      for (let k = 0; k < 8; k += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+      table[n] = value >>> 0;
+    }
+    return table;
+  })();
+
+  function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i += 1) crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  /** Store-only zip: no compression, and every reader accepts it. */
+  function zipStore(files) {
+    const encoder = new TextEncoder();
+    const pieces = [];
+    const directory = [];
+    const now = new Date();
+    const time = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xffff;
+    const date =
+      ((Math.max(1980, now.getFullYear()) - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+    const u16 = (value) => [value & 0xff, (value >>> 8) & 0xff];
+    const u32 = (value) => [
+      value & 0xff,
+      (value >>> 8) & 0xff,
+      (value >>> 16) & 0xff,
+      (value >>> 24) & 0xff,
+    ];
+    let offset = 0;
+
+    for (const file of files) {
+      const name = encoder.encode(file.name);
+      const data = typeof file.data === "string" ? encoder.encode(file.data) : file.data;
+      const crc = crc32(data);
+      const local = [
+        ...u32(0x04034b50),
+        ...u16(20),
+        ...u16(0),
+        ...u16(0),
+        ...u16(time),
+        ...u16(date),
+        ...u32(crc),
+        ...u32(data.length),
+        ...u32(data.length),
+        ...u16(name.length),
+        ...u16(0),
+        ...name,
+      ];
+      pieces.push(new Uint8Array(local), data);
+      directory.push([
+        ...u32(0x02014b50),
+        ...u16(20),
+        ...u16(20),
+        ...u16(0),
+        ...u16(0),
+        ...u16(time),
+        ...u16(date),
+        ...u32(crc),
+        ...u32(data.length),
+        ...u32(data.length),
+        ...u16(name.length),
+        ...u16(0),
+        ...u16(0),
+        ...u16(0),
+        ...u16(0),
+        ...u32(0),
+        ...u32(offset),
+        ...name,
+      ]);
+      offset += local.length + data.length;
+    }
+
+    const tail = [
+      ...directory.flat(),
+      ...u32(0x06054b50),
+      ...u16(0),
+      ...u16(0),
+      ...u16(files.length),
+      ...u16(files.length),
+      ...u32(directory.reduce((size, entry) => size + entry.length, 0)),
+      ...u32(offset),
+      ...u16(0),
+    ];
+    pieces.push(new Uint8Array(tail));
+
+    const total = pieces.reduce((size, piece) => size + piece.length, 0);
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const piece of pieces) {
+      out.set(piece, at);
+      at += piece.length;
+    }
+    return out;
+  }
+
+  function xmlEscape(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&apos;")
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "");
+  }
+
+  function plainText(value) {
+    return String(value == null ? "" : value)
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+      .replace(/(\*\*|__)(.*?)\1/g, "$2")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  /** A table cell can arrive as text, a number, or an object from the model. */
+  function cellText(value) {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "number" || typeof value === "string") return String(value);
+    if (typeof value === "object") {
+      for (const field of ["text", "label", "value", "formula", "name"]) {
+        const found = value[field];
+        if (typeof found === "string" || typeof found === "number") return String(found);
+      }
+      return "";
+    }
+    return String(value);
+  }
+
+  function rels(entries) {
+    return (
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      entries
+        .map((entry) => `<Relationship Id="${entry.id}" Type="${entry.type}" Target="${entry.target}"/>`)
+        .join("") +
+      "</Relationships>"
+    );
+  }
+
+  function rootRels(target) {
+    return rels([
+      {
+        id: "rId1",
+        type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument",
+        target,
+      },
+    ]);
+  }
+
+  const CONTENT_RELS =
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+    '<Default Extension="xml" ContentType="application/xml"/>';
+
+  const DOCX_STYLES =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+    '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault>' +
+    '<w:pPrDefault><w:pPr><w:spacing w:after="150" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>' +
+    '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>' +
+    '<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="260"/></w:pPr><w:rPr><w:b/><w:sz w:val="52"/><w:szCs w:val="52"/></w:rPr></w:style>' +
+    '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="340" w:after="120"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:color w:val="141414"/><w:sz w:val="34"/><w:szCs w:val="34"/></w:rPr></w:style>' +
+    '<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="280" w:after="100"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:color w:val="262626"/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:style>' +
+    '<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="220" w:after="80"/><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:b/><w:color w:val="3A3A3A"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:style>' +
+    '<w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="70"/></w:pPr></w:style>' +
+    '<w:style w:type="paragraph" w:styleId="Quote"><w:name w:val="Quote"/><w:basedOn w:val="Normal"/><w:pPr><w:ind w:left="420"/></w:pPr><w:rPr><w:i/><w:color w:val="4A4A4A"/></w:rPr></w:style>' +
+    '<w:style w:type="paragraph" w:styleId="Code"><w:name w:val="Code"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0"/></w:pPr><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/><w:sz w:val="18"/><w:color w:val="1F2937"/></w:rPr></w:style>' +
+    "</w:styles>";
+
+  function docxText(text) {
+    return String(text == null ? "" : text)
+      .split("\n")
+      .map((line, index) => `${index ? "<w:br/>" : ""}<w:t xml:space="preserve">${xmlEscape(line)}</w:t>`)
+      .join("");
+  }
+
+  function docxParagraph(text, style, prefix) {
+    const properties = style
+      ? `<w:pPr><w:pStyle w:val="${style}"/>${
+          style === "ListParagraph" ? '<w:ind w:left="420" w:hanging="300"/>' : ""
+        }</w:pPr>`
+      : "";
+    const lead = prefix ? `<w:r>${docxText(prefix)}</w:r>` : "";
+    return `<w:p>${properties}${lead}<w:r>${docxText(text)}</w:r></w:p>`;
+  }
+
+  function docxTable(block) {
+    const head = (block.head || []).map((value) => cellText(value));
+    const rows = (block.rows || []).map((row) => row.map((value) => cellText(value)));
+    const all = head.length ? [head, ...rows] : rows;
+    if (!all.length) return "";
+    const columns = Math.max(1, ...all.map((row) => row.length));
+    const cell = (text, bold) =>
+      `<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p><w:pPr><w:spacing w:after="40"/></w:pPr><w:r><w:rPr>${
+        bold ? "<w:b/>" : ""
+      }<w:sz w:val="20"/></w:rPr>${docxText(text)}</w:r></w:p></w:tc>`;
+    const borders = ["top", "left", "bottom", "right", "insideH", "insideV"]
+      .map((side) => `<w:${side} w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/>`)
+      .join("");
+    const grid = Array.from({ length: columns }, () => '<w:gridCol w:w="2200"/>').join("");
+    const body = all
+      .map(
+        (row, index) =>
+          `<w:tr>${Array.from({ length: columns }, (_, column) =>
+            cell(row[column] || "", Boolean(head.length && index === 0))
+          ).join("")}</w:tr>`
+      )
+      .join("");
+    return (
+      `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders>${borders}</w:tblBorders></w:tblPr>` +
+      `<w:tblGrid>${grid}</w:tblGrid>${body}</w:tbl>`
+    );
+  }
+
+  function buildDocx(blocks, title) {
+    const body = [];
+    const first = blocks[0];
+    const repeats =
+      first &&
+      first.t === "h1" &&
+      title &&
+      first.text.trim().toLowerCase() === title.trim().toLowerCase();
+    if (title && title.trim() && !repeats) body.push(docxParagraph(title, "Title"));
+    let number = 0;
+    for (const block of blocks) {
+      if (block.t === "h1" || block.t === "h2" || block.t === "h3") {
+        number = 0;
+        body.push(docxParagraph(block.text, `Heading${block.t.slice(1)}`));
+      } else if (block.t === "bullet") {
+        body.push(docxParagraph(block.text, "ListParagraph", "• "));
+      } else if (block.t === "num") {
+        number += 1;
+        body.push(docxParagraph(block.text, "ListParagraph", `${number}. `));
+      } else if (block.t === "quote") {
+        body.push(docxParagraph(block.text, "Quote"));
+      } else if (block.t === "code") {
+        for (const line of String(block.text || "").split("\n")) body.push(docxParagraph(line || " ", "Code"));
+      } else if (block.t === "table") {
+        const table = docxTable(block);
+        if (table) body.push(table, "<w:p/>");
+      } else if (block.t === "pagebreak") {
+        body.push('<w:p><w:r><w:br w:type="page"/></w:r></w:p>');
+      } else {
+        body.push(docxParagraph(block.text));
+      }
+    }
+    if (!body.length) body.push(docxParagraph(" "));
+
+    const documentXml =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' +
+      body.join("") +
+      '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1417" w:right="1417" w:bottom="1417" w:left="1417" w:header="709" w:footer="709" w:gutter="0"/></w:sectPr>' +
+      "</w:body></w:document>";
+
+    return zipStore([
+      {
+        name: "[Content_Types].xml",
+        data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+          CONTENT_RELS +
+          '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+          '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
+          "</Types>",
+      },
+      { name: "_rels/.rels", data: rootRels("word/document.xml") },
+      { name: "word/document.xml", data: documentXml },
+      { name: "word/styles.xml", data: DOCX_STYLES },
+      {
+        name: "word/_rels/document.xml.rels",
+        data: rels([
+          {
+            id: "rId1",
+            type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles",
+            target: "styles.xml",
+          },
+        ]),
+      },
+    ]);
+  }
+
+  function columnName(index) {
+    let name = "";
+    let value = index + 1;
+    while (value > 0) {
+      const remainder = (value - 1) % 26;
+      name = String.fromCharCode(65 + remainder) + name;
+      value = Math.floor((value - 1) / 26);
+    }
+    return name;
+  }
+
+  function sheetSafeName(name, index, used) {
+    const base =
+      String(name || `Sheet${index + 1}`)
+        .replace(/[\\/*?:[\]]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 31) || `Sheet${index + 1}`;
+    let unique = base;
+    let suffix = 2;
+    while (used.has(unique.toLowerCase())) {
+      unique = `${base.slice(0, 28)} ${suffix}`;
+      suffix += 1;
+    }
+    used.add(unique.toLowerCase());
+    return unique;
+  }
+
+  function buildXlsx(sheets) {
+    const used = new Set();
+    const prepared = sheets.map((sheet, index) => ({
+      name: sheetSafeName(sheet.name, index, used),
+      rows: (sheet.rows || []).map((row) => (Array.isArray(row) ? row : [row])),
+    }));
+
+    const worksheet = (rows) => {
+      const body = rows
+        .map((row, rowIndex) => {
+          const cells = row
+            .map((value, columnIndex) => {
+              const reference = `${columnName(columnIndex)}${rowIndex + 1}`;
+              if (value === null || value === undefined || value === "") return "";
+              if (value && typeof value === "object" && typeof value.formula === "string") {
+                const formula = value.formula.replace(/^=/, "");
+                const cached =
+                  value.value !== undefined && Number.isFinite(Number(value.value))
+                    ? `<v>${Number(value.value)}</v>`
+                    : "";
+                return `<c r="${reference}"><f>${xmlEscape(formula)}</f>${cached}</c>`;
+              }
+              const text = cellText(value);
+              if (!text) return "";
+              const numeric =
+                typeof value === "number"
+                  ? value
+                  : /^-?(?:0|[1-9]\d{0,14})(?:\.\d+)?$/.test(text.trim())
+                  ? Number(text.trim())
+                  : null;
+              if (numeric !== null && Number.isFinite(numeric)) {
+                return `<c r="${reference}"><v>${numeric}</v></c>`;
+              }
+              return `<c r="${reference}" t="inlineStr"><is><t xml:space="preserve">${xmlEscape(
+                text
+              )}</t></is></c>`;
+            })
+            .join("");
+          return `<row r="${rowIndex + 1}">${cells}</row>`;
+        })
+        .join("");
+      return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+        '<cols><col min="1" max="26" width="18" customWidth="1"/></cols>' +
+        `<sheetData>${body}</sheetData></worksheet>`
+      );
+    };
+
+    const files = prepared.map((sheet, index) => ({
+      name: `xl/worksheets/sheet${index + 1}.xml`,
+      data: worksheet(sheet.rows),
+    }));
+
+    files.unshift(
+      {
+        name: "[Content_Types].xml",
+        data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+          CONTENT_RELS +
+          '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+          prepared
+            .map(
+              (_sheet, index) =>
+                `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
+            )
+            .join("") +
+          "</Types>",
+      },
+      { name: "_rels/.rels", data: rootRels("xl/workbook.xml") },
+      {
+        name: "xl/workbook.xml",
+        data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' +
+          prepared
+            .map(
+              (sheet, index) =>
+                `<sheet name="${xmlEscape(sheet.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`
+            )
+            .join("") +
+          "</sheets></workbook>",
+      },
+      {
+        name: "xl/_rels/workbook.xml.rels",
+        data: rels(
+          prepared.map((_sheet, index) => ({
+            id: `rId${index + 1}`,
+            type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet",
+            target: `worksheets/sheet${index + 1}.xml`,
+          }))
+        ),
+      }
+    );
+
+    return zipStore(files);
+  }
+
+  const PPTX_THEME =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Aria"><a:themeElements>' +
+    '<a:clrScheme name="Aria"><a:dk1><a:srgbClr val="161616"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>' +
+    '<a:dk2><a:srgbClr val="3A3A3A"/></a:dk2><a:lt2><a:srgbClr val="F2F1EE"/></a:lt2>' +
+    '<a:accent1><a:srgbClr val="2F6B62"/></a:accent1><a:accent2><a:srgbClr val="C2703D"/></a:accent2>' +
+    '<a:accent3><a:srgbClr val="4472C4"/></a:accent3><a:accent4><a:srgbClr val="7A6CA8"/></a:accent4>' +
+    '<a:accent5><a:srgbClr val="4E8B57"/></a:accent5><a:accent6><a:srgbClr val="A64D79"/></a:accent6>' +
+    '<a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme>' +
+    '<a:fontScheme name="Aria"><a:majorFont><a:latin typeface="Calibri Light"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>' +
+    '<a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme>' +
+    '<a:fmtScheme name="Aria">' +
+    '<a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill>' +
+    '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst>' +
+    '<a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln>' +
+    '<a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln>' +
+    '<a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln></a:lnStyleLst>' +
+    '<a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle>' +
+    '<a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst>' +
+    '<a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill>' +
+    '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst>' +
+    "</a:fmtScheme></a:themeElements></a:theme>";
+
+  const PPT_NS =
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
+    'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"';
+
+  const PPT_TREE_HEAD =
+    '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>' +
+    '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>';
+
+  function pptxShape(id, name, x, y, cx, cy, lines, size, bold) {
+    const runs = (lines.length ? lines : [""])
+      .map(
+        (line) =>
+          `<a:p><a:pPr><a:buNone/></a:pPr><a:r><a:rPr lang="en-GB" sz="${size}"${
+            bold ? ' b="1"' : ""
+          }/><a:t>${xmlEscape(line)}</a:t></a:r></a:p>`
+      )
+      .join("");
+    return (
+      `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${name}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>` +
+      `<p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>` +
+      '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>' +
+      `<p:txBody><a:bodyPr wrap="square"><a:normAutofit/></a:bodyPr><a:lstStyle/>${runs}</p:txBody></p:sp>`
+    );
+  }
+
+  function slideXml(slide) {
+    const title = String(slide.title || "");
+    const bullets = (slide.bullets || []).map((line) => plainText(line)).filter((line) => line);
+    const shapes = [];
+    if (title) shapes.push(pptxShape(2, "Title", 731520, 502920, 10744200, 1371600, [title], 3200, true));
+    if (bullets.length) {
+      shapes.push(
+        pptxShape(
+          3,
+          "Body",
+          731520,
+          title ? 2103120 : 731520,
+          10744200,
+          title ? 4206240 : 5486400,
+          bullets.map((line) => `• ${line}`),
+          1800,
+          false
+        )
+      );
+    }
+    return (
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      `<p:sld ${PPT_NS}><p:cSld>${PPT_TREE_HEAD}${shapes.join("")}</p:spTree></p:cSld>` +
+      "<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>"
+    );
+  }
+
+  function buildPptx(slides) {
+    const deck = slides.length ? slides : [{ title: "", bullets: [] }];
+    const files = [];
+
+    files.push({
+      name: "[Content_Types].xml",
+      data:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+        CONTENT_RELS +
+        '<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>' +
+        '<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>' +
+        '<Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>' +
+        '<Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>' +
+        deck
+          .map(
+            (_slide, index) =>
+              `<Override PartName="/ppt/slides/slide${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`
+          )
+          .join("") +
+        "</Types>",
+    });
+
+    files.push({ name: "_rels/.rels", data: rootRels("ppt/presentation.xml") });
+
+    files.push({
+      name: "ppt/presentation.xml",
+      data:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        `<p:presentation ${PPT_NS}>` +
+        '<p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst>' +
+        `<p:sldIdLst>${deck
+          .map((_slide, index) => `<p:sldId id="${256 + index}" r:id="rId${index + 2}"/>`)
+          .join("")}</p:sldIdLst>` +
+        '<p:sldSz cx="12192000" cy="6858000"/><p:notesSz cx="6858000" cy="9144000"/>' +
+        "</p:presentation>",
+    });
+
+    const presentationRels = [
+      {
+        id: "rId1",
+        type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster",
+        target: "slideMasters/slideMaster1.xml",
+      },
+    ].concat(
+      deck.map((_slide, index) => ({
+        id: `rId${index + 2}`,
+        type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide",
+        target: `slides/slide${index + 1}.xml`,
+      })),
+      [
+        {
+          id: `rId${deck.length + 2}`,
+          type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme",
+          target: "theme/theme1.xml",
+        },
+      ]
+    );
+
+    files.push({ name: "ppt/_rels/presentation.xml.rels", data: rels(presentationRels) });
+
+    files.push({
+      name: "ppt/slideMasters/slideMaster1.xml",
+      data:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        `<p:sldMaster ${PPT_NS}><p:cSld><p:bg><p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef></p:bg>${PPT_TREE_HEAD}</p:spTree></p:cSld>` +
+        '<p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>' +
+        '<p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst>' +
+        '<p:txStyles><p:titleStyle><a:lvl1pPr><a:defRPr sz="3200"/></a:lvl1pPr></p:titleStyle>' +
+        '<p:bodyStyle><a:lvl1pPr><a:defRPr sz="1800"/></a:lvl1pPr></p:bodyStyle>' +
+        '<p:otherStyle><a:lvl1pPr><a:defRPr sz="1800"/></a:lvl1pPr></p:otherStyle></p:txStyles>' +
+        "</p:sldMaster>",
+    });
+
+    files.push({
+      name: "ppt/slideMasters/_rels/slideMaster1.xml.rels",
+      data: rels([
+        {
+          id: "rId1",
+          type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout",
+          target: "../slideLayouts/slideLayout1.xml",
+        },
+        {
+          id: "rId2",
+          type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme",
+          target: "../theme/theme1.xml",
+        },
+      ]),
+    });
+
+    files.push({
+      name: "ppt/slideLayouts/slideLayout1.xml",
+      data:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        `<p:sldLayout ${PPT_NS} type="blank" preserve="1"><p:cSld name="Blank">${PPT_TREE_HEAD}</p:spTree></p:cSld>` +
+        "<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>",
+    });
+
+    files.push({
+      name: "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
+      data: rels([
+        {
+          id: "rId1",
+          type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster",
+          target: "../slideMasters/slideMaster1.xml",
+        },
+      ]),
+    });
+
+    files.push({ name: "ppt/theme/theme1.xml", data: PPTX_THEME });
+
+    deck.forEach((slide, index) => {
+      files.push({ name: `ppt/slides/slide${index + 1}.xml`, data: slideXml(slide) });
+      files.push({
+        name: `ppt/slides/_rels/slide${index + 1}.xml.rels`,
+        data: rels([
+          {
+            id: "rId1",
+            type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout",
+            target: "../slideLayouts/slideLayout1.xml",
+          },
+        ]),
+      });
+    });
+
+    return zipStore(files);
+  }
+
+  const PDF_GLYPHS = {
+    "\u2018": 0x91,
+    "\u2019": 0x92,
+    "\u201c": 0x93,
+    "\u201d": 0x94,
+    "\u2022": 0x95,
+    "\u2013": 0x96,
+    "\u2014": 0x97,
+    "\u2026": 0x85,
+    "\u20ac": 0x80,
+    "\u00a0": 0x20,
+  };
+
+  function pdfString(text) {
+    let out = "";
+    for (const character of String(text)) {
+      let code = PDF_GLYPHS[character];
+      if (code === undefined) {
+        const point = character.codePointAt(0);
+        code = point <= 0xff ? point : 0x3f;
+      }
+      if (code === 0x28 || code === 0x29 || code === 0x5c) out += `\\${String.fromCharCode(code)}`;
+      else if (code < 32 || code > 126) out += `\\${code.toString(8).padStart(3, "0")}`;
+      else out += String.fromCharCode(code);
+    }
+    return out;
+  }
+
+  function wrapPdf(text, perLine) {
+    const words = String(text).split(/\s+/).filter(Boolean);
+    const lines = [];
+    let line = "";
+    for (const word of words) {
+      if (!line) line = word;
+      else if (line.length + word.length + 1 <= perLine) line += ` ${word}`;
+      else {
+        lines.push(line);
+        line = word;
+      }
+    }
+    if (line) lines.push(line);
+    return lines.length ? lines : [""];
+  }
+
+  function buildPdf(blocks, title) {
+    const pageWidth = 595.28;
+    const pageHeight = 841.89;
+    const margin = 56;
+    const usable = pageWidth - margin * 2;
+    const pages = [];
+    let ops = [];
+    let y = pageHeight - margin;
+
+    const newPage = () => {
+      if (ops.length) pages.push(ops.join("\n"));
+      ops = [];
+      y = pageHeight - margin;
+    };
+
+    const write = (text, size, bold, indent) => {
+      const left = margin + (indent || 0);
+      const perLine = Math.max(10, Math.floor((usable - (indent || 0)) / (size * 0.5)));
+      for (const line of wrapPdf(text, perLine)) {
+        if (y < margin + size) newPage();
+        ops.push(
+          `BT /${bold ? "F2" : "F1"} ${size} Tf 1 0 0 1 ${left.toFixed(2)} ${y.toFixed(2)} Tm (${pdfString(
+            line
+          )}) Tj ET`
+        );
+        y -= size * 1.45;
+      }
+    };
+
+    const first = blocks[0];
+    const repeats =
+      first &&
+      first.t === "h1" &&
+      title &&
+      first.text.trim().toLowerCase() === title.trim().toLowerCase();
+    if (title && title.trim() && !repeats) {
+      write(title, 22, true, 0);
+      y -= 10;
+    }
+
+    let number = 0;
+    for (const block of blocks) {
+      if (block.t === "h1") {
+        y -= 6;
+        write(block.text, 17, true, 0);
+        number = 0;
+      } else if (block.t === "h2") {
+        y -= 4;
+        write(block.text, 14, true, 0);
+        number = 0;
+      } else if (block.t === "h3") {
+        y -= 2;
+        write(block.text, 12, true, 0);
+        number = 0;
+      } else if (block.t === "bullet") {
+        write(`\u2022  ${block.text}`, 11, false, 14);
+      } else if (block.t === "num") {
+        number += 1;
+        write(`${number}.  ${block.text}`, 11, false, 14);
+      } else if (block.t === "quote") {
+        write(`\u201c${block.text}\u201d`, 11, false, 18);
+      } else if (block.t === "code") {
+        for (const line of String(block.text || "").split("\n")) write(line || " ", 9, false, 12);
+      } else if (block.t === "table") {
+        const head = (block.head || []).map((value) => cellText(value));
+        const rows = (block.rows || []).map((row) => row.map((value) => cellText(value)));
+        if (head.length) write(head.join("  |  "), 9, true, 0);
+        for (const row of rows) write(row.join("  |  "), 9, false, 0);
+        y -= 4;
+      } else if (block.t === "pagebreak") {
+        newPage();
+      } else {
+        write(block.text, 11, false, 0);
+        y -= 6;
+      }
+    }
+    if (ops.length) pages.push(ops.join("\n"));
+    if (!pages.length) pages.push("");
+
+    const objects = [];
+    const pageIds = pages.map((_page, index) => 6 + index * 2);
+    objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+    objects[2] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${
+      pageIds.length
+    } >>`;
+    objects[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
+    objects[4] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>";
+
+    pages.forEach((content, index) => {
+      const contentId = 5 + index * 2;
+      const pageId = pageIds[index];
+      objects[contentId] = `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
+      objects[pageId] =
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] ` +
+        `/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${contentId} 0 R >>`;
+    });
+
+    let out = "%PDF-1.4\n";
+    const offsets = [];
+    for (let id = 1; id < objects.length; id += 1) {
+      if (!objects[id]) continue;
+      offsets[id] = out.length;
+      out += `${id} 0 obj\n${objects[id]}\nendobj\n`;
+    }
+    const startxref = out.length;
+    out += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+    for (let id = 1; id < objects.length; id += 1) {
+      out += `${String(offsets[id] || 0).padStart(10, "0")} 00000 n \n`;
+    }
+    out += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${startxref}\n%%EOF\n`;
+    return new TextEncoder().encode(out);
+  }
+
+  function tidyBlocks(raw) {
+    const list = Array.isArray(raw) ? raw : [];
+    const out = [];
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue;
+      const t = String(item.t || item.type || "p").toLowerCase();
+      if (t === "sheet" || t === "slide") {
+        out.push({ ...item, t });
+        continue;
+      }
+      const text = item.text != null ? plainText(item.text) : "";
+      if (t === "table") {
+        out.push({
+          t: "table",
+          head: (item.head || item.header || []).map((value) => cellText(value)),
+          rows: (item.rows || []).map((row) =>
+            (Array.isArray(row) ? row : [row]).map((value) => cellText(value))
+          ),
+        });
+        continue;
+      }
+      if (t === "bullet" || t === "num") {
+        const items = Array.isArray(item.items) ? item.items : text ? [text] : [];
+        for (const one of items) if (String(one).trim()) out.push({ t, text: plainText(one) });
+        continue;
+      }
+      if (t === "pagebreak") {
+        out.push({ t });
+        continue;
+      }
+      if (!text.trim()) continue;
+      out.push({ t: ["h1", "h2", "h3", "quote", "code"].includes(t) ? t : "p", text });
+    }
+    return out;
+  }
+
+  function sheetsFrom(blocks) {
+    const sheets = blocks
+      .filter((block) => block.t === "sheet")
+      .map((block, index) => ({
+        name: block.name || block.title || `Sheet${index + 1}`,
+        rows: (block.rows || []).map((row) => (Array.isArray(row) ? row : [row])),
+      }));
+    if (sheets.length) return sheets;
+    const tables = blocks.filter((block) => block.t === "table");
+    if (tables.length) {
+      return tables.map((table, index) => ({
+        name: table.name || `Table ${index + 1}`,
+        rows: [table.head || [], ...(table.rows || [])],
+      }));
+    }
+    const rows = blocks.map((block) => [block.text || ""]);
+    return [{ name: "Sheet1", rows: rows.length ? rows : [[""]] }];
+  }
+
+  function slidesFrom(blocks) {
+    const slides = blocks
+      .filter((block) => block.t === "slide")
+      .map((block) => ({
+        title: String(block.title || ""),
+        bullets: (block.bullets || block.items || []).map((line) => plainText(line)).filter(Boolean),
+      }));
+    if (slides.length) return slides;
+
+    const out = [];
+    let current = null;
+    for (const block of blocks) {
+      if (block.t === "h1" || block.t === "h2" || block.t === "h3") {
+        current = { title: block.text, bullets: [] };
+        out.push(current);
+        continue;
+      }
+      if (!current) {
+        current = { title: "", bullets: [] };
+        out.push(current);
+      }
+      if (block.t === "table") {
+        if ((block.head || []).length) current.bullets.push(block.head.join(" · "));
+        for (const row of block.rows || []) current.bullets.push(row.join(" · "));
+      } else if (block.t === "bullet" || block.t === "num" || block.text) {
+        current.bullets.push(block.text || "");
+      }
+    }
+    const made = out.filter((slide) => slide.title || slide.bullets.length);
+    if (made.length && !made.some((slide) => slide.title)) {
+      // No headings to split on: keep each slide readable instead of one wall of text.
+      const lines = made.flatMap((slide) => slide.bullets);
+      const chunked = [];
+      for (let index = 0; index < lines.length; index += 6) {
+        chunked.push({ title: index ? "" : "Summary", bullets: lines.slice(index, index + 6) });
+      }
+      return chunked.slice(0, 40);
+    }
+    return made.slice(0, 40);
+  }
+
+  function blocksToMarkdown(blocks) {
+    const lines = [];
+    for (const block of blocks) {
+      if (block.t === "h1") lines.push(`# ${block.text}`, "");
+      else if (block.t === "h2") lines.push(`## ${block.text}`, "");
+      else if (block.t === "h3") lines.push(`### ${block.text}`, "");
+      else if (block.t === "bullet") lines.push(`- ${block.text}`);
+      else if (block.t === "num") lines.push(`1. ${block.text}`);
+      else if (block.t === "quote") lines.push(`> ${block.text}`, "");
+      else if (block.t === "code") lines.push("```", String(block.text || ""), "```", "");
+      else if (block.t === "pagebreak") lines.push("---", "");
+      else if (block.t === "table") {
+        const head = block.head || [];
+        if (head.length) {
+          lines.push(`| ${head.join(" | ")} |`);
+          lines.push(`| ${head.map(() => "---").join(" | ")} |`);
+          for (const row of block.rows || []) lines.push(`| ${row.join(" | ")} |`);
+          lines.push("");
+        }
+      } else if (block.text) lines.push(block.text, "");
+    }
+    return lines.join("\n").trim();
+  }
+
+  function blocksToHtml(blocks, title) {
+    const parts = blocks.map((block) => {
+      if (block.t === "h1") return `<h1>${escapeHtml(block.text)}</h1>`;
+      if (block.t === "h2") return `<h2>${escapeHtml(block.text)}</h2>`;
+      if (block.t === "h3") return `<h3>${escapeHtml(block.text)}</h3>`;
+      if (block.t === "bullet") return `<li>${escapeHtml(block.text)}</li>`;
+      if (block.t === "num") return `<li>${escapeHtml(block.text)}</li>`;
+      if (block.t === "quote") return `<blockquote>${escapeHtml(block.text)}</blockquote>`;
+      if (block.t === "code") return `<pre><code>${escapeHtml(block.text)}</code></pre>`;
+      if (block.t === "pagebreak") return '<hr class="pagebreak">';
+      if (block.t === "table") {
+        const head = block.head || [];
+        const rows = block.rows || [];
+        return (
+          `<table>${head.length ? `<thead><tr>${head.map((value) => `<th>${escapeHtml(value)}</th>`).join("")}</tr></thead>` : ""}` +
+          `<tbody>${rows.map((row) => `<tr>${row.map((value) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`).join("")}</tbody></table>`
+        );
+      }
+      return `<p>${escapeHtml(block.text || "")}</p>`;
+    });
+    return (
+      "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>" +
+      escapeHtml(title || "Aria") +
+      '</title><style>body{font:16px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;color:#161616;max-width:720px;margin:48px auto;padding:0 20px}' +
+      "h1,h2,h3{line-height:1.25}table{border-collapse:collapse;width:100%;margin:18px 0}td,th{border:1px solid #ddd;padding:8px;text-align:left}" +
+      "blockquote{margin:18px 0;padding-left:16px;border-left:3px solid #ddd;color:#444}pre{background:#f5f5f3;padding:14px;overflow:auto}</style></head><body>" +
+      `<h1>${escapeHtml(title || "Aria")}</h1>` +
+      parts.join("") +
+      "</body></html>"
+    );
+  }
+
+  function blocksToCsv(blocks) {
+    const table = blocks.find((block) => block.t === "table") || blocks.find((block) => block.t === "sheet");
+    const rows = table
+      ? table.t === "sheet"
+        ? table.rows || []
+        : [table.head || [], ...(table.rows || [])]
+      : blocks.map((block) => [block.text || ""]);
+    const cell = (value) => {
+      const text = cellText(value);
+      return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    return rows.map((row) => row.map(cell).join(",")).join("\r\n");
+  }
+
+  function specToFile(spec) {
+    const kind = String(spec.kind || "docx")
+      .toLowerCase()
+      .replace(/[^a-z]/g, "");
+    const info = FILE_KINDS[kind];
+    if (!info) return null;
+    const blocks = tidyBlocks(spec.blocks);
+    const title = spec.title ? plainText(spec.title) : "";
+    const name = `${slugName(spec.name || title || "aria-file")}.${info.ext}`;
+    let bytes;
+    if (kind === "docx") bytes = buildDocx(blocks, title);
+    else if (kind === "xlsx") bytes = buildXlsx(sheetsFrom(blocks));
+    else if (kind === "pptx") bytes = buildPptx(slidesFrom(blocks));
+    else if (kind === "pdf") bytes = buildPdf(blocks, title);
+    else if (kind === "csv") bytes = new TextEncoder().encode(blocksToCsv(blocks));
+    else if (kind === "html") bytes = new TextEncoder().encode(blocksToHtml(blocks, title));
+    else bytes = new TextEncoder().encode(blocksToMarkdown(blocks));
+    return { kind, name, bytes, label: info.label, mime: info.mime, blocks, title };
+  }
+
+  function readSpec(body) {
+    const attempts = [
+      body,
+      body.replace(/,\s*([}\]])/g, "$1"),
+      body.slice(body.indexOf("{"), body.lastIndexOf("}") + 1),
+    ];
+    for (const attempt of attempts) {
+      try {
+        const parsed = JSON.parse(attempt);
+        if (parsed && typeof parsed === "object" && (parsed.blocks || parsed.kind)) return parsed;
+      } catch (_) {
+        /* try the next repair */
+      }
+    }
+    return null;
+  }
+
+  function fileBlocksIn(text) {
+    const found = [];
+    const fences = /```[ \t]*([\w-]*)[ \t]*\r?\n([\s\S]*?)```/g;
+    let match;
+    while ((match = fences.exec(text))) {
+      const lang = (match[1] || "").toLowerCase();
+      const body = match[2].trim();
+      if (!body.startsWith("{")) continue;
+      if (!/^aria-file$/.test(lang) && !(/"kind"\s*:/.test(body) && /"(?:blocks|sheet|slide)"\s*:/.test(body))) {
+        continue;
+      }
+      const spec = readSpec(body);
+      if (spec) found.push(spec);
+    }
+    return found;
+  }
+
+  function markdownToBlocks(source) {
+    const blocks = [];
+    const lines = String(source || "").split("\n");
+    let paragraph = [];
+    let code = null;
+    const flush = () => {
+      if (paragraph.length) {
+        blocks.push({ t: "p", text: plainText(paragraph.join(" ")) });
+        paragraph = [];
+      }
+    };
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const fence = /^\s*```/.test(line);
+      if (code !== null) {
+        if (fence) {
+          blocks.push({ t: "code", text: code.join("\n") });
+          code = null;
+        } else code.push(line);
+        continue;
+      }
+      if (fence) {
+        flush();
+        code = [];
+        continue;
+      }
+      if (!line.trim()) {
+        flush();
+        continue;
+      }
+      const heading = line.match(/^(#{1,3})\s+(.*)$/);
+      if (heading) {
+        flush();
+        blocks.push({ t: `h${heading[1].length}`, text: plainText(heading[2]) });
+        continue;
+      }
+      if (line.trim().startsWith("|")) {
+        const rows = [];
+        let at = index;
+        while (at < lines.length && lines[at].trim().startsWith("|")) {
+          const raw = lines[at].trim();
+          if (!/^[\s:|-]+$/.test(raw)) {
+            rows.push(
+              raw
+                .replace(/^\|/, "")
+                .replace(/\|$/, "")
+                .split("|")
+                .map((value) => plainText(value))
+            );
+          }
+          at += 1;
+        }
+        if (rows.length) {
+          flush();
+          blocks.push({ t: "table", head: rows[0], rows: rows.slice(1) });
+          index = at - 1;
+          continue;
+        }
+      }
+      const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+      if (bullet) {
+        flush();
+        blocks.push({ t: "bullet", text: plainText(bullet[1]) });
+        continue;
+      }
+      const ordered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+      if (ordered) {
+        flush();
+        blocks.push({ t: "num", text: plainText(ordered[1]) });
+        continue;
+      }
+      const quote = line.match(/^>\s?(.*)$/);
+      if (quote) {
+        flush();
+        blocks.push({ t: "quote", text: plainText(quote[1]) });
+        continue;
+      }
+      paragraph.push(line.trim());
+    }
+    flush();
+    if (code) blocks.push({ t: "code", text: code.join("\n") });
+    return blocks;
+  }
+
+  function slugName(value) {
+    const clean = String(value || "")
+      .normalize("NFKD")
+      .replace(/[^\w\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "-")
+      .toLowerCase()
+      .slice(0, 48)
+      .replace(/^-+|-+$/g, "");
+    return clean || "aria-file";
+  }
+
+  function saveBytes(bytes, name, mime) {
+    const blob = new Blob([bytes], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.rel = "noopener";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
+  function previewHtml(file) {
+    const blocks = file.blocks || [];
+    if (file.kind === "xlsx") {
+      return sheetsFrom(blocks)
+        .map((sheet) => {
+          const rows = sheet.rows
+            .slice(0, 24)
+            .map((row) => `<tr>${row.map((value) => `<td>${escapeHtml(cellText(value))}</td>`).join("")}</tr>`)
+            .join("");
+          return `<h4>${escapeHtml(sheet.name)}</h4><div class="table-wrap"><table>${rows}</table></div>`;
+        })
+        .join("");
+    }
+    if (file.kind === "pptx") {
+      return slidesFrom(blocks)
+        .map(
+          (slide) =>
+            `<div class="slide-preview"><strong>${escapeHtml(slide.title || "")}</strong>${
+              slide.bullets.length
+                ? `<ul>${slide.bullets.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>`
+                : ""
+            }</div>`
+        )
+        .join("");
+    }
+    if (file.kind === "csv" || file.kind === "txt") {
+      const text = new TextDecoder().decode(file.bytes);
+      return `<pre class="file-text">${escapeHtml(text.slice(0, 2600))}</pre>`;
+    }
+    return renderMarkdown(blocksToMarkdown(blocks));
+  }
+
+  function fileCard(file) {
+    const card = document.createElement("div");
+    card.className = "file-card";
+    card.__file = file;
+
+    const badge = document.createElement("span");
+    badge.className = "file-badge";
+    badge.dataset.kind = file.kind;
+    badge.textContent = FILE_BADGES[file.kind] || "FILE";
+
+    const info = document.createElement("div");
+    info.className = "file-card-info";
+    const name = document.createElement("strong");
+    name.textContent = file.name;
+    const meta = document.createElement("span");
+    meta.textContent = `${file.label} · ${humanSize(file.bytes.length)}`;
+    info.append(name, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "file-card-actions";
+    const download = document.createElement("button");
+    download.type = "button";
+    download.dataset.download = "1";
+    download.textContent = "Download";
+    const preview = document.createElement("button");
+    preview.type = "button";
+    preview.dataset.preview = "1";
+    preview.textContent = "Preview";
+    actions.append(download, preview);
+
+    const shown = document.createElement("div");
+    shown.className = "file-preview";
+    shown.hidden = true;
+    shown.innerHTML = previewHtml(file);
+
+    card.append(badge, info, actions, shown);
+    return card;
+  }
+
+  function saveRow() {
+    const details = document.createElement("details");
+    details.className = "save-as";
+    const summary = document.createElement("summary");
+    summary.textContent = "Save this answer as a file";
+    const row = document.createElement("div");
+    row.className = "save-as-row";
+    for (const [kind, label] of [
+      ["docx", "Word"],
+      ["xlsx", "Excel"],
+      ["pptx", "Slides"],
+      ["pdf", "PDF"],
+      ["txt", "Text"],
+    ]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.save = kind;
+      button.textContent = label;
+      row.append(button);
+    }
+    details.append(summary, row);
+    return details;
+  }
+
+  function mountFiles(body, text, streaming) {
+    if (streaming) {
+      if (/```\s*aria-file/i.test(text)) {
+        const wait = document.createElement("p");
+        wait.className = "wait-hint";
+        wait.textContent = "Building your file…";
+        body.append(wait);
+      }
+      return;
+    }
+    const specs = fileBlocksIn(text);
+    for (const spec of specs) {
+      let file = null;
+      try {
+        file = specToFile(spec);
+      } catch (_) {
+        file = null;
+      }
+      if (file) body.append(fileCard(file));
+      else
+        notice(
+          body,
+          "I could not build that file — its description arrived incomplete. Ask again and I'll rebuild it."
+        );
+    }
+    if (!specs.length && text.replace(/\s+/g, " ").length > 240) body.append(saveRow());
+  }
+
+  /* ------------------------------------------------------------------ *
    * One turn: ask, render, remember
    * ------------------------------------------------------------------ */
 
@@ -1657,10 +3328,12 @@
     }, PATIENCE_HINT_MS);
 
     let live = null;
-    try {
-      live = await gatherLive(currentQuestion());
-    } catch (_) {
-      live = null; // a lookup is a bonus: never hold the answer up for it
+    if (!pendingImages.length) {
+      try {
+        live = await gatherLive(currentQuestion());
+      } catch (_) {
+        live = null; // a lookup is a bonus: never hold the answer up for it
+      }
     }
 
     try {
@@ -1713,6 +3386,7 @@
 
     await respond(body);
 
+    pendingImages = [];
     busy = false;
     updateComposer();
     scrollToBottom();
@@ -1724,6 +3398,11 @@
     if (attachments.some((record) => record.state === "reading")) return;
     const files = attachments.slice();
     if (!trimmed && !files.length) return;
+
+    pendingImages = files
+      .filter((record) => record.state === "picture" && record.file)
+      .slice(0, 3)
+      .map((record) => record.file);
 
     const prompt = trimmed || defaultPrompt(files);
 
@@ -1846,15 +3525,42 @@
   });
 
   el.messages.addEventListener("click", async (event) => {
-    const button = event.target.closest(".copy");
-    if (!button) return;
-    const code = decodeURIComponent(button.dataset.code || "");
-    try {
-      await navigator.clipboard.writeText(code);
-      button.textContent = "copied";
-      setTimeout(() => (button.textContent = "copy"), 1400);
-    } catch (_) {
-      button.textContent = "select + copy";
+    const copy = event.target.closest(".copy");
+    if (copy) {
+      const code = decodeURIComponent(copy.dataset.code || "");
+      try {
+        await navigator.clipboard.writeText(code);
+        copy.textContent = "copied";
+        setTimeout(() => (copy.textContent = "copy"), 1400);
+      } catch (_) {
+        copy.textContent = "select + copy";
+      }
+      return;
+    }
+
+    const card = event.target.closest(".file-card");
+    if (card && card.__file) {
+      if (event.target.closest("[data-download]")) {
+        saveBytes(card.__file.bytes, card.__file.name, card.__file.mime);
+        return;
+      }
+      if (event.target.closest("[data-preview]")) {
+        const shown = card.querySelector(".file-preview");
+        if (shown) shown.hidden = !shown.hidden;
+        return;
+      }
+    }
+
+    const save = event.target.closest("[data-save]");
+    if (save) {
+      const body = save.closest(".md");
+      const text = (body && body.dataset.text) || "";
+      const blocks = markdownToBlocks(text);
+      const heading = blocks.find((block) => block.t === "h1" || block.t === "h2");
+      const title = heading ? heading.text : "Aria note";
+      const file = specToFile({ kind: save.dataset.save, title, name: title, blocks });
+      if (file) saveBytes(file.bytes, file.name, file.mime);
+      return;
     }
   });
 
