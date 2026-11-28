@@ -141,6 +141,8 @@ Ask for a document and she hands you the file itself, written in your browser â€
 
 Every answer also has **Save as** underneath it, which turns the answer you are reading into any of those files. A preview opens in the page first, so you can check the numbers and the wording before you download.
 
+The file is built from a description the model writes, and that description is not always perfect: it can arrive cut off, in an unexpected format, or missing altogether because the model answered "I can't attach files". All three cases still end in a download â€” the page repairs a cut-off description, accepts the obvious variations of each format name, and otherwise builds the file from the answer's own text, in the format you asked for.
+
 ## Settings
 
 The gear in the top corner opens one panel with everything you can change. It is all stored in this browser, on this device.

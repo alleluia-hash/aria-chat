@@ -21,7 +21,7 @@
 
   const STORAGE_KEY = "aria:chat:v1";
   const SETTINGS_KEY = "aria:settings:v1";
-  const VERSION = "1.3.0";
+  const VERSION = "1.3.1";
   const KEYLESS_ENDPOINT = "https://text.pollinations.ai/openai";
   const KEYLESS_PACE_SECONDS = 45;
   const REQUEST_TIMEOUT_MS = 75000;
@@ -135,10 +135,13 @@
 
   // Files out: the model describes the file, the browser builds the real thing.
   const FILE_INSTRUCTIONS =
-    " DELIVERING A FILE. When the person asks for something they can open and keep -- a " +
-    "document, report, letter, resume, spreadsheet, budget, table, slide deck, PDF -- do the " +
-    "work, then emit it as one fenced block that starts with ```aria-file and holds ONE JSON " +
-    "object, then close the fence. Nothing else goes inside that fence. Shape: " +
+    " DELIVERING A FILE. You do deliver files: this page turns your description into a real " +
+    "download on the person's device, so never say you cannot attach, send or create a file, " +
+    "never offer to paste text for them to save by hand, and never tell them to open Notepad. " +
+    "When they ask for something they can open and keep -- a document, report, letter, essay, " +
+    "resume, spreadsheet, budget, table, slide deck, PDF, or a .txt, .docx, .xlsx or .pdf file -- " +
+    "do the work, then emit it as one fenced block that starts with ```aria-file and holds ONE " +
+    "JSON object, then close the fence. Nothing else goes inside that fence. Shape: " +
     '{"kind":"docx","name":"q3-budget","title":"Q3 budget","blocks":' +
     '[{"t":"h1","text":"Q3 budget"},{"t":"p","text":"..."},' +
     '{"t":"bullet","text":"..."},{"t":"table","head":["Item","Cost"],' +
@@ -150,8 +153,10 @@
     "sheet, numbers as numbers. For pptx use " +
     '{"t":"slide","title":"...","bullets":["..."]} -- one block per slide. The JSON must be ' +
     "strictly valid: double quotes, no comments, no trailing commas, no unescaped line breaks, " +
-    "no markdown inside strings. Write the whole file, never a placeholder. Say one short line " +
-    "before the fence and nothing after it. If they did not ask for a file, do not emit one.";
+    "no markdown inside strings. Write the whole file, never a placeholder. The document lives " +
+    "in the JSON: keep your own words outside the fence to one short line and do not repeat the " +
+    "document in the chat, so a long file still arrives complete. If they did not ask for a file, " +
+    "do not emit one.";
 
   const el = {
     chat: document.getElementById("chat"),
@@ -182,6 +187,10 @@
   let aborter = null;
   /** @type {File[]} the pictures of the turn being asked, for a lane that can see them */
   let pendingImages = [];
+  /** true when the turn asked for a file, so a broken answer still becomes one */
+  let turnWantsFile = false;
+  /** the kind that turn asked for: .txt, .docx, .xlsx ... */
+  let turnFileKind = "docx";
 
   /* ------------------------------------------------------------------ *
    * Markdown — small and safe: everything is escaped before formatting
@@ -2070,6 +2079,72 @@
     txt: { label: "text file", ext: "txt", mime: "text/plain;charset=utf-8" },
   };
 
+  const KIND_ALIASES = {
+    word: "docx",
+    doc: "docx",
+    docs: "docx",
+    document: "docx",
+    report: "docx",
+    letter: "docx",
+    essay: "docx",
+    notes: "docx",
+    resume: "docx",
+    excel: "xlsx",
+    xls: "xlsx",
+    sheet: "xlsx",
+    sheets: "xlsx",
+    spreadsheet: "xlsx",
+    workbook: "xlsx",
+    table: "xlsx",
+    budget: "xlsx",
+    tracker: "xlsx",
+    powerpoint: "pptx",
+    ppt: "pptx",
+    slide: "pptx",
+    slides: "pptx",
+    deck: "pptx",
+    presentation: "pptx",
+    pdf: "pdf",
+    markdown: "md",
+    md: "md",
+    text: "txt",
+    txt: "txt",
+    plain: "txt",
+    note: "txt",
+    html: "html",
+    htm: "html",
+    csv: "csv",
+  };
+
+  const ASKS_FOR_FILE =
+    /\b(?:document|report|letter|resume|cv|docx|spreadsheet|excel|xlsx|budget|invoice|tracker|slide|slides|deck|presentation|pptx|pdf|csv|checklist|template|cheat ?sheet)\b|\.(?:txt|text|md|markdown|docx|doc|xlsx|xls|pptx|ppt|pdf|csv|html?)\b|\b(?:give|make|build|create|send|need|want|save|export|download|write)\b[^.\n]{0,24}\bfiles?\b/i;
+
+  function wantsFileRequest(text) {
+    return ASKS_FOR_FILE.test(String(text || ""));
+  }
+
+  /** The format they actually asked for, so a rescued file is the right kind. */
+  function kindFromRequest(text) {
+    const asked = String(text || "").toLowerCase();
+    if (/\.(?:xlsx|xls)\b|spreadsheet|excel|\btable\b|budget|tracker/.test(asked)) return "xlsx";
+    if (/\.(?:pptx|ppt)\b|slide|\bdeck\b|presentation/.test(asked)) return "pptx";
+    if (/\.pdf\b/.test(asked)) return "pdf";
+    if (/\.csv\b/.test(asked)) return "csv";
+    if (/\.(?:md|markdown)\b/.test(asked)) return "md";
+    if (/\.(?:txt|text)\b|plain text|notepad/.test(asked)) return "txt";
+    if (/\.html?\b|web ?page/.test(asked)) return "html";
+    return "docx";
+  }
+
+  /** "word" means docx, "deck" means pptx: an unknown kind must never lose the file. */
+  function fileKind(name) {
+    const key = String(name || "")
+      .toLowerCase()
+      .replace(/[^a-z]/g, "");
+    if (FILE_KINDS[key]) return key;
+    return KIND_ALIASES[key] || "docx";
+  }
+
   const FILE_BADGES = {
     docx: "DOC",
     xlsx: "XLS",
@@ -3020,10 +3095,22 @@
     return rows.map((row) => row.map(cell).join(",")).join("\r\n");
   }
 
+  function blocksToText(blocks) {
+    const lines = [];
+    for (const block of blocks) {
+      if (block.t === "table") {
+        if ((block.head || []).length) lines.push(block.head.join(" | "));
+        for (const row of block.rows || []) lines.push(row.join(" | "));
+        lines.push("");
+      } else if (block.text) {
+        lines.push(block.text, "");
+      }
+    }
+    return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
+  }
+
   function specToFile(spec) {
-    const kind = String(spec.kind || "docx")
-      .toLowerCase()
-      .replace(/[^a-z]/g, "");
+    const kind = fileKind(spec.kind);
     const info = FILE_KINDS[kind];
     if (!info) return null;
     const blocks = tidyBlocks(spec.blocks);
@@ -3034,10 +3121,65 @@
     else if (kind === "xlsx") bytes = buildXlsx(sheetsFrom(blocks));
     else if (kind === "pptx") bytes = buildPptx(slidesFrom(blocks));
     else if (kind === "pdf") bytes = buildPdf(blocks, title);
+    else if (kind === "txt") bytes = new TextEncoder().encode(blocksToText(blocks));
     else if (kind === "csv") bytes = new TextEncoder().encode(blocksToCsv(blocks));
     else if (kind === "html") bytes = new TextEncoder().encode(blocksToHtml(blocks, title));
     else bytes = new TextEncoder().encode(blocksToMarkdown(blocks));
     return { kind, name, bytes, label: info.label, mime: info.mime, blocks, title };
+  }
+
+  /** The brackets still open at the end of a cut-off JSON string, in closing order. */
+  function unclosedBrackets(head) {
+    const stack = [];
+    let inString = false;
+    let escaped = false;
+    for (let index = 0; index < head.length; index += 1) {
+      const character = head[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') inString = true;
+      else if (character === "{") stack.push("}");
+      else if (character === "[") stack.push("]");
+      else if (character === "}" || character === "]") stack.pop();
+    }
+    return stack.reverse().join("");
+  }
+
+  /** A long answer gets cut off mid-JSON; keep every block that made it whole. */
+  function repairTruncated(body) {
+    const start = String(body || "").indexOf("{");
+    if (start === -1) return null;
+    const text = body.slice(start);
+
+    const cuts = [];
+    let inString = false;
+    let escaped = false;
+    for (let index = 0; index < text.length; index += 1) {
+      const character = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') inString = true;
+      else if (character === "}" || character === "]") cuts.push(index);
+    }
+
+    for (let at = cuts.length - 1; at >= 0 && cuts.length - at < 500; at -= 1) {
+      const head = text.slice(0, cuts[at] + 1).replace(/,\s*$/, "");
+      try {
+        const parsed = JSON.parse(head + unclosedBrackets(head));
+        if (parsed && typeof parsed === "object" && (parsed.blocks || parsed.kind)) return parsed;
+      } catch (_) {
+        /* cut a block earlier and try again */
+      }
+    }
+    return null;
   }
 
   function readSpec(body) {
@@ -3054,7 +3196,7 @@
         /* try the next repair */
       }
     }
-    return null;
+    return repairTruncated(body);
   }
 
   function fileBlocksIn(text) {
@@ -3070,6 +3212,22 @@
       }
       const spec = readSpec(body);
       if (spec) found.push(spec);
+    }
+
+    // An answer that ran out before its closing fence still holds a usable file.
+    if (!found.length) {
+      const opened = text.lastIndexOf("```");
+      const head = opened === -1 ? -1 : text.slice(opened).search(/```[ \t]*[\w-]*[ \t]*\r?\n/);
+      if (opened !== -1 && head !== -1) {
+        const tail = text
+          .slice(opened)
+          .replace(/^```[ \t]*[\w-]*[ \t]*\r?\n?/, "")
+          .trim();
+        if (tail.startsWith("{")) {
+          const spec = readSpec(tail);
+          if (spec) found.push(spec);
+        }
+      }
     }
     return found;
   }
@@ -3279,9 +3437,46 @@
     return details;
   }
 
+  /** The answer with any file JSON taken out — the words the person can read. */
+  function proseFrom(text) {
+    return String(text || "")
+      .replace(/```[ \t]*([\w-]*)[ \t]*\r?\n([\s\S]*?)(?:```|$)/g, (whole, lang, inner) => {
+        const looksLikeFile = /^\s*\{/.test(inner) && /"kind"\s*:/.test(inner.slice(0, 400));
+        return /^aria-file/i.test(lang) || looksLikeFile ? "" : whole;
+      })
+      .replace(/```[ \t]*aria-file[\s\S]*$/i, "")
+      .trim();
+  }
+
+  /** Never lose the deliverable: build the file from the answer when its JSON is unusable. */
+  function fallbackFile(spec, prose) {
+    const kind = spec && spec.kind ? fileKind(spec.kind) : turnFileKind || "docx";
+
+    // The model sometimes explains how to copy the text before it starts writing.
+    // When there is a heading, the document starts there, not at that preamble.
+    const start = prose.search(/^#{1,3}\s+\S/m);
+    const body = start > 0 ? prose.slice(start) : prose;
+
+    const headingMatch = body.match(/^#{1,3}\s+(.+)$/m);
+    const heading = headingMatch ? headingMatch[1] : (spec && spec.title) || "Aria note";
+    const title = plainText(String(heading)).slice(0, 120);
+    const blocks = markdownToBlocks(body);
+    if (!blocks.length) return null;
+    try {
+      return specToFile({
+        kind,
+        name: (spec && spec.name) || title,
+        title,
+        blocks,
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
   function mountFiles(body, text, streaming) {
     if (streaming) {
-      if (/```\s*aria-file/i.test(text)) {
+      if (/```[\s\S]{0,80}?"kind"\s*:/.test(text)) {
         const wait = document.createElement("p");
         wait.className = "wait-hint";
         wait.textContent = "Building your file…";
@@ -3289,7 +3484,11 @@
       }
       return;
     }
+
     const specs = fileBlocksIn(text);
+    const prose = proseFrom(text);
+    let made = 0;
+
     for (const spec of specs) {
       let file = null;
       try {
@@ -3297,14 +3496,23 @@
       } catch (_) {
         file = null;
       }
-      if (file) body.append(fileCard(file));
-      else
-        notice(
-          body,
-          "I could not build that file — its description arrived incomplete. Ask again and I'll rebuild it."
-        );
+      if (!file) file = fallbackFile(spec, prose);
+      if (file) {
+        body.append(fileCard(file));
+        made += 1;
+      }
     }
-    if (!specs.length && text.replace(/\s+/g, " ").length > 240) body.append(saveRow());
+
+    // She asked for a file but the answer carried no usable file block: build it anyway.
+    if (!made && turnWantsFile && prose.replace(/\s+/g, " ").length > 200) {
+      const auto = fallbackFile(null, prose);
+      if (auto) {
+        body.append(fileCard(auto));
+        made += 1;
+      }
+    }
+
+    if (!made && !specs.length && text.replace(/\s+/g, " ").length > 240) body.append(saveRow());
   }
 
   /* ------------------------------------------------------------------ *
@@ -3413,6 +3621,8 @@
       .map((record) => record.file);
 
     const prompt = trimmed || defaultPrompt(files);
+    turnWantsFile = wantsFileRequest(prompt);
+    turnFileKind = kindFromRequest(prompt);
 
     el.welcome.hidden = true;
     el.input.value = "";
@@ -3428,6 +3638,7 @@
     scrollToBottom();
 
     await runTurn(body);
+    turnWantsFile = false;
   }
 
   /* ------------------------------------------------------------------ *
