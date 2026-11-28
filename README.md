@@ -36,8 +36,9 @@ The same page is also packaged as an Android APK and a Windows zip. GitHub
 Actions builds both on every push that touches the page and publishes them as
 a release named after `package/VERSION`:
 
-1. change something, then bump `package/VERSION` (`1.1.0` -> `1.1.1`)
-2. push to `main`
+1. change something, then bump `package/VERSION` (`1.2.0` -> `1.2.1`)
+2. bump the `?v=` on the `styles.css` and `app.js` links in `index.html` to the same number, so a browser (or a phone) fetches the new files instead of a cached copy
+3. push to `main`
 
 The workflow then builds the APK (versionName `1.1.1`, versionCode `10101`),
 the Windows zip and the combined zip, and creates the release `v1.1.1`, which
