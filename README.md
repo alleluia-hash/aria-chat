@@ -141,6 +141,17 @@ Ask for a document and she hands you the file itself, written in your browser â€
 
 Every answer also has **Save as** underneath it, which turns the answer you are reading into any of those files. A preview opens in the page first, so you can check the numbers and the wording before you download.
 
+## Settings
+
+The gear in the top corner opens one panel with everything you can change. It is all stored in this browser, on this device.
+
+| Setting | What it does |
+| --- | --- |
+| Appearance | Light, dark, or **Device** to follow whatever the phone or laptop is set to |
+| Text size | Small, normal or large â€” every message, label and heading scales together |
+| Replies | Which lane answers: the free keyless one, or the optional free account for instant replies and for pictures. The button signs in, and signs out again |
+| On this device | Clear this chat, or put the settings back to their defaults |
+
 ## Privacy
 
 - No analytics, no cookies, no accounts required, no server of ours in the middle.

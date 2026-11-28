@@ -20,7 +20,9 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  /* Same palette as [data-theme="dark"] below: this only paints before the
+     script has read the saved choice, so a dark device never flashes white. */
+  :root:not([data-theme]) {
     --bg: #121212;
     --surface: #1a1a1a;
     --text: #ececec;
@@ -50,7 +52,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.65;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -114,13 +116,13 @@ body {
 }
 
 .brand-text strong {
-  font-size: 15px;
+  font-size: 0.9375rem;
   letter-spacing: -0.01em;
 }
 
 .brand-text small {
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 0.7188rem;
   letter-spacing: 0.02em;
 }
 
@@ -134,7 +136,7 @@ body {
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem;
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
@@ -181,7 +183,7 @@ body {
   margin: 0 0 22px;
   max-width: 46ch;
   color: var(--muted);
-  font-size: 15.5px;
+  font-size: 0.9688rem;
 }
 
 .chips {
@@ -197,7 +199,7 @@ body {
   background: var(--surface);
   color: var(--muted);
   font: inherit;
-  font-size: 13.5px;
+  font-size: 0.8438rem;
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s, transform 0.15s;
 }
@@ -356,7 +358,7 @@ body {
 .table-wrap table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .table-wrap th,
@@ -369,7 +371,7 @@ body {
 
 .table-wrap th {
   background: var(--code-bg);
-  font-size: 12.5px;
+  font-size: 0.7812rem;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -402,7 +404,7 @@ body {
   border-bottom: 1px solid var(--code-line);
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 0.7188rem;
   text-transform: lowercase;
 }
 
@@ -411,7 +413,7 @@ body {
   padding: 12px;
   overflow-x: auto;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.55;
 }
 
@@ -429,7 +431,7 @@ body {
   background: var(--surface);
   color: var(--muted);
   font: inherit;
-  font-size: 11px;
+  font-size: 0.6875rem;
   cursor: pointer;
 }
 
@@ -477,13 +479,13 @@ body {
 .wait-hint {
   margin: 2px 0 0;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 0.7812rem;
 }
 
 .sources {
   margin: 10px 0 0;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 0.7812rem;
   line-height: 1.5;
 }
 
@@ -505,7 +507,7 @@ body {
   border-radius: 10px;
   background: var(--surface);
   color: var(--muted);
-  font-size: 13.5px;
+  font-size: 0.8438rem;
 }
 
 .notice.card {
@@ -534,7 +536,7 @@ body {
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: 0.7812rem;
   cursor: pointer;
   transition: background 0.15s, opacity 0.15s;
 }
@@ -623,7 +625,7 @@ body {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
-  font-size: 12.5px;
+  font-size: 0.7812rem;
   line-height: 1.5;
 }
 
@@ -636,7 +638,7 @@ body {
 
 .attachment .file-meta {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   white-space: nowrap;
 }
 
@@ -652,7 +654,7 @@ body {
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1;
   cursor: pointer;
 }
@@ -672,7 +674,7 @@ body {
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 15.5px;
+  font-size: 0.9688rem;
   line-height: 1.55;
   resize: none;
 }
@@ -723,7 +725,7 @@ body {
   gap: 4px 16px;
   margin: 8px 4px 0;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 0.7188rem;
 }
 
 .privacy {
@@ -755,7 +757,7 @@ body {
   border-radius: 11px;
   background: var(--user-bubble);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--muted);
@@ -786,14 +788,14 @@ body {
 }
 
 .file-card-info strong {
-  font-size: 14.5px;
+  font-size: 0.9062rem;
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 
 .file-card-info span {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .file-card-actions {
@@ -810,7 +812,7 @@ body {
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: 0.7812rem;
   cursor: pointer;
   transition: background 0.15s, opacity 0.15s;
 }
@@ -845,7 +847,7 @@ body {
 .file-preview h4 {
   margin: 8px 0 6px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
 }
 
@@ -859,20 +861,20 @@ body {
 .file-preview .slide-preview strong {
   display: block;
   margin-bottom: 4px;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .file-preview ul {
   margin: 0;
   padding-left: 18px;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .file-preview pre.file-text {
   max-height: 220px;
   margin: 0;
   overflow: auto;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .save-as {
@@ -884,7 +886,7 @@ body {
   align-items: center;
   gap: 6px;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 0.7812rem;
   list-style: none;
   cursor: pointer;
 }
@@ -895,7 +897,7 @@ body {
 
 .save-as summary::before {
   content: "⤓";
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .save-as summary:hover {
@@ -925,4 +927,174 @@ body {
   .hint .privacy {
     display: none;
   }
+}
+
+/* ---------- settings ---------- */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-only {
+  padding: 8px;
+  gap: 0;
+}
+
+html {
+  font-size: 16px;
+}
+
+:root[data-size="small"] {
+  font-size: 14.5px;
+}
+
+:root[data-size="large"] {
+  font-size: 18px;
+}
+
+.settings {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 14px;
+}
+
+.settings[hidden] {
+  display: none;
+}
+
+.settings-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(14, 14, 13, 0.45);
+}
+
+.settings-card {
+  position: relative;
+  width: min(430px, 100%);
+  max-height: min(660px, calc(100dvh - 28px));
+  overflow: auto;
+  padding: 16px 18px 12px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  letter-spacing: -0.01em;
+}
+
+.settings-body {
+  margin-top: 6px;
+}
+
+.settings-row {
+  display: grid;
+  gap: 10px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+
+.settings-row:first-child {
+  border-top: 0;
+}
+
+.settings-label strong {
+  display: block;
+  font-size: 0.95rem;
+}
+
+.settings-label span {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.seg {
+  display: inline-flex;
+  gap: 3px;
+  width: fit-content;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--code-bg);
+}
+
+.seg button {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 13px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.seg button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-action {
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.settings-action:hover {
+  border-color: var(--line-strong);
+  background: var(--code-bg);
+}
+
+.settings-foot {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+/* The palette the script sets when the choice is dark, or when the device is. */
+:root[data-theme="dark"] {
+  --bg: #121212;
+  --surface: #1a1a1a;
+  --text: #ececec;
+  --muted: #9b9993;
+  --line: #2a2926;
+  --line-strong: #3a3833;
+  --accent: #f2f1ee;
+  --accent-text: #161616;
+  --user-bubble: #232220;
+  --code-bg: #1d1c1a;
+  --code-line: #302e2a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.28);
 }

@@ -20,6 +20,8 @@
   "use strict";
 
   const STORAGE_KEY = "aria:chat:v1";
+  const SETTINGS_KEY = "aria:settings:v1";
+  const VERSION = "1.3.0";
   const KEYLESS_ENDPOINT = "https://text.pollinations.ai/openai";
   const KEYLESS_PACE_SECONDS = 45;
   const REQUEST_TIMEOUT_MS = 75000;
@@ -162,6 +164,12 @@
     attach: document.getElementById("attach"),
     fileInput: document.getElementById("fileInput"),
     attachments: document.getElementById("attachments"),
+    settings: document.getElementById("settings"),
+    settingsBtn: document.getElementById("settingsBtn"),
+    laneText: document.getElementById("laneText"),
+    laneButton: document.getElementById("laneButton"),
+    clearChatBtn: document.getElementById("clearChatBtn"),
+    resetSettingsBtn: document.getElementById("resetSettingsBtn"),
   };
 
   /** @type {{role: "user"|"assistant", content: string}[]} */
@@ -3462,6 +3470,159 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Settings — appearance, text size, the reply lane, local data
+   * ------------------------------------------------------------------ */
+
+  const settings = { theme: "auto", size: "normal" };
+  const darkQuery =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: dark)")
+      : null;
+
+  function loadSettings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
+      if (saved && typeof saved === "object") {
+        if (["auto", "light", "dark"].includes(saved.theme)) settings.theme = saved.theme;
+        if (["small", "normal", "large"].includes(saved.size)) settings.size = saved.size;
+      }
+    } catch (_) {
+      /* private mode: the defaults stay */
+    }
+  }
+
+  function storeSettings() {
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    } catch (_) {
+      /* nothing to do — the choice just won't survive a reload */
+    }
+  }
+
+  function resolvedTheme() {
+    if (settings.theme === "auto") return darkQuery && darkQuery.matches ? "dark" : "light";
+    return settings.theme;
+  }
+
+  function applySettings() {
+    const root = document.documentElement;
+    root.dataset.theme = resolvedTheme();
+    root.dataset.size = settings.size;
+
+    if (el.settings) {
+      el.settings.querySelectorAll("[data-theme-set]").forEach((button) => {
+        button.setAttribute("aria-pressed", String(button.dataset.themeSet === settings.theme));
+      });
+      el.settings.querySelectorAll("[data-size-set]").forEach((button) => {
+        button.setAttribute("aria-pressed", String(button.dataset.sizeSet === settings.size));
+      });
+    }
+    paintLane();
+  }
+
+  function paintLane() {
+    const text = el.laneText;
+    const button = el.laneButton;
+    if (!text || !button) return;
+
+    const loaded = Boolean(window.puter && window.puter.auth && window.puter.ai);
+    if (!loaded) {
+      text.textContent =
+        "Free lane — no account, paced at about one answer a minute. The optional free account did not load, so it cannot be switched on right now.";
+      button.hidden = true;
+      return;
+    }
+
+    button.hidden = false;
+    if (puterReady()) {
+      text.textContent =
+        "Free account — instant replies, and she can see the pictures you attach. Signed in on this device.";
+      button.textContent = "Sign out";
+    } else {
+      text.textContent =
+        "Free lane — no account, paced at about one answer a minute. A free account makes replies instant and lets her see pictures.";
+      button.textContent = "Use a free account";
+    }
+  }
+
+  function openSettings() {
+    if (!el.settings) return;
+    el.settings.hidden = false;
+    paintLane();
+    const first = el.settings.querySelector("[data-theme-set]");
+    if (first) first.focus();
+  }
+
+  function closeSettings() {
+    if (el.settings) el.settings.hidden = true;
+  }
+
+  function wireSettings() {
+    if (!el.settings || !el.settingsBtn) return;
+
+    el.settingsBtn.addEventListener("click", openSettings);
+
+    el.settings.addEventListener("click", (event) => {
+      if (event.target.closest("[data-close]")) {
+        closeSettings();
+        return;
+      }
+
+      const themeButton = event.target.closest("[data-theme-set]");
+      if (themeButton) {
+        settings.theme = themeButton.dataset.themeSet;
+        storeSettings();
+        applySettings();
+        return;
+      }
+
+      const sizeButton = event.target.closest("[data-size-set]");
+      if (sizeButton) {
+        settings.size = sizeButton.dataset.sizeSet;
+        storeSettings();
+        applySettings();
+      }
+    });
+
+    el.laneButton.addEventListener("click", async () => {
+      const label = el.laneButton.textContent;
+      el.laneButton.disabled = true;
+      el.laneButton.textContent = "Please wait…";
+      try {
+        if (puterReady()) {
+          if (window.puter.auth.signOut) await window.puter.auth.signOut();
+        } else {
+          await window.puter.auth.signIn();
+        }
+      } catch (_) {
+        /* the popup was closed or blocked — the lane stays as it was */
+      }
+      el.laneButton.disabled = false;
+      el.laneButton.textContent = label;
+      paintLane();
+    });
+
+    el.clearChatBtn.addEventListener("click", () => {
+      startNewChat();
+      closeSettings();
+    });
+
+    el.resetSettingsBtn.addEventListener("click", () => {
+      settings.theme = "auto";
+      settings.size = "normal";
+      storeSettings();
+      applySettings();
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && el.settings && !el.settings.hidden) closeSettings();
+    });
+
+    const version = document.getElementById("settingsVersion");
+    if (version) version.textContent = VERSION;
+  }
+
+  /* ------------------------------------------------------------------ *
    * UI wiring
    * ------------------------------------------------------------------ */
 
@@ -3501,7 +3662,7 @@
     }
   });
 
-  el.newChat.addEventListener("click", () => {
+  function startNewChat() {
     if (busy) return;
     history = [];
     attachments = [];
@@ -3513,8 +3674,9 @@
     autoGrow();
     updateComposer();
     el.input.focus();
-  });
+  }
 
+  el.newChat.addEventListener("click", startNewChat);
   el.welcome.addEventListener("click", (event) => {
     const chip = event.target.closest(".chip");
     if (!chip) return;
@@ -3602,6 +3764,15 @@
     const files = event.clipboardData && event.clipboardData.files;
     if (files && files.length) addFiles(files);
   });
+
+  loadSettings();
+  applySettings();
+  wireSettings();
+  if (darkQuery && darkQuery.addEventListener) {
+    darkQuery.addEventListener("change", () => {
+      if (settings.theme === "auto") applySettings();
+    });
+  }
 
   restore();
   autoGrow();
